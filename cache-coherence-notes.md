@@ -48,6 +48,15 @@
 
 ### 2. Слои кэширования в реальных системах
    - Браузерный кэш / HTTP‑кэш (ETag, Cache-Control).
+     - Что может храниться:
+       - статические ресурсы (JS, CSS, шрифты, картинки, иконки);
+       - ответы API, если помечены подходящими заголовками;
+       - offline‑ресурсы и данные в Cache Storage через Service Worker.
+     - Как инвалидируется:
+       - заголовки `Cache-Control` (`max-age`, `no-store`, `no-cache`, `must-revalidate`);
+       - условные запросы с `ETag` / `If-None-Match`, `Last-Modified` / `If-Modified-Since`;
+       - версионирование статических файлов (hash в имени: `app.[hash].js`) и cache busting;
+       - обновление Service Worker’а и явная очистка/миграция Cache Storage.
    - CDN / edge‑кэширующие прокси.
    - Кэш на уровне приложения (in‑process) — LRU в памяти сервиса.
    - Распределённый кэш (Redis/Memcached‑кластер).
