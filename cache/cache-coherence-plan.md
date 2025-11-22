@@ -126,19 +126,24 @@
 - **Базовый паттерн Cache-Aside** (разбираем подробно, остальные паттерны упоминаем):
 
   **[СХЕМА 2]** Flow запроса карточки товара:
-  ```python
-  function getProduct(productId):
-    # 1. Проверяем Redis
-    data = redis.get(f"product:{productId}")
-    
-    if data is None:  # cache miss
-      # 2. Идём в БД
-      data = db.query("SELECT * FROM products WHERE id = ?", productId)
-      
-      # 3. Кладём в кэш с TTL
-      redis.set(f"product:{productId}", data, TTL=300)  # 5 минут
-    
-    return data
+  ```php
+  public function getProduct(int $productId): array
+  {
+      $cacheKey = sprintf('product:%d', $productId);
+
+      // 1. Проверяем Redis / Symfony Cache
+      $cached = $this->cache->get($cacheKey, function (ItemInterface $item) use ($productId) {
+          $item->expiresAfter(300); // 5 минут TTL
+
+          // 2. Идём в БД
+          return $this->connection->fetchAssociative(
+              'SELECT * FROM products WHERE id = :id',
+              ['id' => $productId]
+          );
+      });
+
+      return $cached;
+  }
   ```
 
   Запрос "товар ID=123":
@@ -176,14 +181,20 @@
 
 1.5. **Race condition в Cache-Aside: почему coherence — это проблема**
 
-Обновление товара и классическая гонка:
-   ```python
-   function updateProduct(productId, newPrice):
-     # 1. Обновляем БД
-     db.update("UPDATE products SET price = ? WHERE id = ?", newPrice, productId)
-     
-     # 2. Инвалидируем кэш
-     redis.delete(f"product:{productId}")
+Обновление товара и классическая гонка (пример на PHP/Symfony-подобном стиле):
+   ```php
+   public function updateProduct(int $productId, float $newPrice): void
+   {
+       // 1. Обновляем БД (через Doctrine DBAL / ORM)
+       $this->connection->executeStatement(
+           'UPDATE products SET price = :price WHERE id = :id',
+           ['price' => $newPrice, 'id' => $productId]
+       );
+
+       // 2. Инвалидируем кэш (Symfony Cache, Redis-клиент и т.п.)
+       $cacheKey = sprintf('product:%d', $productId);
+       $this->cache->delete($cacheKey);
+   }
    ```
 
 **[СХЕМА 3]** Timeline race condition:
@@ -272,17 +283,34 @@
     - ✅ Предсказуемое окно рассинхрона (обычно <1 секунды)
     - ❌ Дороже в реализации, нужна инфраструктура
     - Когда подходит: профили пользователей, корзины
-    - Пример:
-      ```python
-      function updateProduct(productId, data):
-        db.update(productId, data)
-        eventBus.publish("product.updated", {id: productId})
-        
-      # На всех backend-серверах:
-      eventBus.subscribe("product.updated", (event) => {
-        redis.delete(f"product:{event.id}")
-        localCache.delete(f"product:{event.id}")
-      })
+    - Пример (PHP + Symfony Messenger / EventBus):
+      ```php
+      // Сервисный метод, который обновляет товар и публикует событие
+      public function updateProduct(int $productId, array $data): void
+      {
+          $this->productRepository->update($productId, $data);
+
+          // Публикуем доменное событие в шину (Messenger, Kafka, RabbitMQ и т.п.)
+          $this->eventBus->dispatch(new ProductUpdatedEvent($productId));
+      }
+
+      // Обработчик события (слушатель Symfony Messenger)
+      final class InvalidateProductCacheHandler
+      {
+          public function __construct(
+              private CacheInterface $cache,
+          ) {}
+
+          public function __invoke(ProductUpdatedEvent $event): void
+          {
+              $cacheKey = sprintf('product:%d', $event->getProductId());
+
+              // Инвалидируем кэш Redis / Symfony Cache
+              $this->cache->delete($cacheKey);
+
+              // если есть локальный L1-кэш в сервисе — чистим и его
+          }
+      }
       ```
 
    **В. Lease / token-based подходы:**
