@@ -197,26 +197,27 @@ sequenceDiagram
 ```mermaid
 graph LR
     subgraph "Что видит пользователь"
-        A[Профиль показывает:<br/>Санкт-Петербург ✅]
-        B[Корзина показывает:<br/>Москва ❌]
+        A["Профиль: СПб ✅"]
+        B["Корзина: Москва ❌"]
     end
-    
+
     subgraph "Под капотом"
-        DB[(БД<br/>address: СПб)]
-        Redis1[(Redis<br/>profile:user:123<br/>address: СПб)]
-        Redis2[(Redis<br/>cart:user:123<br/>address: Москва)]
-        CDN[CDN<br/>cached page<br/>address: Москва]
+        DB["БД: СПб"]
+        R1["Redis (profile): СПб"]
+        R2["Redis (cart): Москва (stale)"]
+        CDN["CDN: Москва (stale)"]
     end
-    
-    A -.-> Redis1
-    A -.-> DB
-    B -.-> Redis2
-    B -.-> CDN
-    
-    style Redis1 fill:#90EE90
-    style DB fill:#90EE90
-    style Redis2 fill:#FFB6C1
-    style CDN fill:#FFB6C1
+
+    A -. читает .-> R1
+    A -. читает .-> DB
+    B -. читает .-> R2
+    B -. читает .-> CDN
+
+    classDef fresh fill:#e6f4ea,stroke:#2e7d32,color:#1b5e20;
+    classDef stale fill:#ffebee,stroke:#c62828,color:#b71c1c;
+
+    class DB,R1 fresh;
+    class R2,CDN stale;
 ```
 
 **Проблема:** Профиль пользователя хранится в 4 местах:
@@ -330,18 +331,24 @@ sequenceDiagram
 
 ```mermaid
 graph TB
-    B1[Backend 1]
-    B2[Backend 2]
-    B3[Backend 3]
-    Redis[(Redis кластер<br/>shared cache)]
-    DB[(PostgreSQL)]
+    B1["Backend 1"]
+    B2["Backend 2"]
+    B3["Backend 3"]
+    Redis["Redis кластер (shared cache)"]
+    DB["PostgreSQL (source of truth)"]
     
     B1 --> Redis
     B2 --> Redis
     B3 --> Redis
     Redis --> DB
-    
-    style Redis fill:#ffe1e1
+
+    classDef backend fill:#eceff1,stroke:#607d8b,color:#263238;
+    classDef cache fill:#fff3e0,stroke:#fb8c00,color:#4e342e;
+    classDef db fill:#e3f2fd,stroke:#1976d2,color:#0d47a1;
+
+    class B1,B2,B3 backend;
+    class Redis cache;
+    class DB db;
 ```
 
 **Плюсы:** Coherence проще — данные в одном месте  
@@ -351,21 +358,24 @@ graph TB
 
 ```mermaid
 graph TB
-    B1[Backend 1<br/>L1: in-memory]
-    B2[Backend 2<br/>L1: in-memory]
-    B3[Backend 3<br/>L1: in-memory]
-    Redis[(Redis<br/>L2: shared)]
-    DB[(PostgreSQL)]
+    B1["Backend 1 (L1 in-memory)"]
+    B2["Backend 2 (L1 in-memory)"]
+    B3["Backend 3 (L1 in-memory)"]
+    Redis["Redis (L2 shared)"]
+    DB["PostgreSQL"]
     
     B1 --> Redis
     B2 --> Redis
     B3 --> Redis
     Redis --> DB
-    
-    style B1 fill:#ffe1f5
-    style B2 fill:#ffe1f5
-    style B3 fill:#ffe1f5
-    style Redis fill:#ffe1e1
+
+    classDef backendL1 fill:#f3e5f5,stroke:#8e24aa,color:#4a148c;
+    classDef cache fill:#fff3e0,stroke:#fb8c00,color:#4e342e;
+    classDef db fill:#e3f2fd,stroke:#1976d2,color:#0d47a1;
+
+    class B1,B2,B3 backendL1;
+    class Redis cache;
+    class DB db;
 ```
 
 **Плюсы:** Очень быстрый L1 (микросекунды)  
@@ -659,8 +669,8 @@ graph TB
     L1 --> Redis
     Redis --> DB
     
-    style Browser fill:#FFB6C1
-    style CDN fill:#FFB6C1
+    style Browser fill:#ffebee
+    style CDN fill:#ffebee
     style L1 fill:#90EE90
     style Redis fill:#90EE90
     style DB fill:#90EE90
@@ -847,16 +857,13 @@ avg_latency = (
 
 ```mermaid
 graph LR
-    A[1. UPDATE БД] --> B[2. Publish событие]
-    B --> C[3. Инвалидация L2 Redis]
-    B --> D[3. Инвалидация L1 всех серверов]
-    B --> E[3. Purge CDN опционально]
-    
-    style A fill:#e1ffe1
-    style B fill:#e1f5ff
-    style C fill:#ffe1e1
-    style D fill:#ffe1f5
-    style E fill:#fff4e1
+    A["1. UPDATE БД"] --> B["2. Publish событие"]
+    B --> C["3. Инвалидация L2 Redis"]
+    B --> D["3. Инвалидация L1 всех серверов"]
+    B --> E["3. Purge CDN (опционально)"]
+
+    classDef step fill:#fafafa,stroke:#b0bec5,color:#263238;
+    class A,B,C,D,E step;
 ```
 
 **Псевдокод:**
@@ -1062,9 +1069,10 @@ graph TB
     Client1 -->|33k RPS| Redis
     Client2 -->|33k RPS| Redis
     ClientN -->|34k RPS| Redis
-    
-    style Redis fill:#ff6b6b
-    
+
+    classDef cacheHot fill:#212121,stroke:#000000,color:#ffffff;
+    class Redis cacheHot;
+
     Note[Redis master<br/>перегружен! 🔥]
 ```
 
@@ -1100,16 +1108,16 @@ def get_product(product_id):
 
 ```mermaid
 graph TB
-    Clients[Клиенты<br/>100k RPS]
+    Clients["Клиенты (100k RPS)"]
     
     subgraph "Hot Keys Tier"
-        Hot1[Hot Cache 1]
-        Hot2[Hot Cache 2]
-        Hot3[Hot Cache 3]
+        Hot1["Hot Cache 1"]
+        Hot2["Hot Cache 2"]
+        Hot3["Hot Cache 3"]
     end
     
-    Redis[(Redis<br/>Regular keys)]
-    DB[(PostgreSQL)]
+    Redis["Redis (regular keys)"]
+    DB["PostgreSQL"]
     
     Clients -->|hot keys| Hot1
     Clients -->|hot keys| Hot2
@@ -1120,10 +1128,14 @@ graph TB
     Hot2 --> DB
     Hot3 --> DB
     Redis --> DB
-    
-    style Hot1 fill:#90EE90
-    style Hot2 fill:#90EE90
-    style Hot3 fill:#90EE90
+
+    classDef client fill:#eceff1,stroke:#607d8b,color:#263238;
+    classDef cache fill:#e6f4ea,stroke:#2e7d32,color:#1b5e20;
+    classDef db fill:#e3f2fd,stroke:#1976d2,color:#0d47a1;
+
+    class Clients client;
+    class Hot1,Hot2,Hot3,Redis cache;
+    class DB db;
 ```
 
 #### Проблема 2: Cache Stampede (thundering herd)
@@ -1300,9 +1312,9 @@ graph TB
     
     C1 --> Redis1
     Redis1 -.->|редкие miss| DB1
-    
-    style Redis1 fill:#90EE90
-    style DB1 fill:#90EE90
+
+    classDef nodeDark fill:#212121,stroke:#000000,color:#ffffff;
+    class Redis1,DB1 nodeDark;
 ```
 
 ```mermaid
@@ -1315,9 +1327,9 @@ graph TB
     
     C2 --> Redis2
     Redis2 -->|ВСЕ запросы| DB2
-    
-    style Redis2 fill:#FFB6C1
-    style DB2 fill:#ff6b6b
+
+    classDef nodeDark fill:#212121,stroke:#000000,color:#ffffff;
+    class Redis2,DB2 nodeDark;
 ```
 
 **Timeline инцидента:**
@@ -1558,9 +1570,9 @@ graph TB
     B2 --> R2
     
     R1 -.->|сеть упала| R2
-    
-    style R1 fill:#ff6b6b
-    style R2 fill:#ff6b6b
+
+    classDef redisDark fill:#212121,stroke:#000000,color:#ffffff;
+    class R1,R2 redisDark;
 ```
 
 **Timeline:**
