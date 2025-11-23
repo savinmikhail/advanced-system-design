@@ -1251,52 +1251,42 @@ func getProduct(productID int) (*Product, error) {
 
 ### 3.8. Метрики и наблюдаемость
 
-**Dashboard для многоуровневого кэша:**
+**Dashboard для многоуровневого кэша: что на нём должно быть**
+
+```mermaid
+graph TB
+    subgraph "Caching dashboard"
+        HR["Hit rate по слоям\n(L1, L2, CDN)"]
+        LAT["P99 latency по слоям"]
+        DBQ["DB QPS при cache miss"]
+        STALE["Stale read rate\n(через версионирование)"]
+    end
+```
+
+Для реализации это обычно раскладывается в несколько метрик (Prometheus / Grafana):
 
 ```python
-# Prometheus metrics (пример)
+# Примеры имён метрик
+cache_hit_rate{layer="l1"}
+cache_hit_rate{layer="l2"}
+cache_hit_rate{layer="cdn"}
 
-# Hit rate по слоям
-cache_hit_rate{layer="l1"} 0.75      # 75%
-cache_hit_rate{layer="l2"} 0.90      # 90%
-cache_hit_rate{layer="cdn"} 0.95     # 95%
+cache_latency_p99{layer="l1"}
+cache_latency_p99{layer="l2"}
+cache_latency_p99{layer="cdn"}
+db_latency_p99
 
-# Latency по слоям (P99)
-cache_latency_p99{layer="l1"} 0.5    # 0.5ms
-cache_latency_p99{layer="l2"} 3.0    # 3ms
-cache_latency_p99{layer="cdn"} 15.0  # 15ms
-db_latency_p99 50.0                  # 50ms
-
-# Количество инвалидаций
-cache_invalidations_per_sec 150
-
-# Hot keys
-cache_hot_keys_detected 3
+cache_invalidations_per_sec
+cache_hot_keys_detected
+stale_read_rate
 ```
 
-**Когда добавить/убрать слой кэша:**
+**Когда добавить/убрать слой кэша (как читать дэшборд):**
 
-```
-Добавить L1 если:
-- L2 hit rate > 80%, но latency всё равно высокая (>5ms)
-- Есть очень горячие ключи (>10k RPS на ключ)
-- Читаем одни и те же справочники постоянно
-
-Убрать L1 если:
-- Hit rate < 50% — накладные расходы не оправдываются
-- Проблемы с coherence — L1 постоянно устаревает
-- Memory pressure на backend-серверах
-
-Добавить CDN если:
-- Много статики и медиа
-- Пользователи географически распределены
-- Можем позволить eventual consistency
-
-Убрать CDN если:
-- Данные меняются слишком часто (TTL < 10 секунд)
-- Нужна strong consistency
-- Высокая стоимость purge операций
-```
+- Если `cache_hit_rate{layer="l2"}` высокий (>80%), но `cache_latency_p99{layer="l2"}` всё равно большая → имеет смысл добавить L1 in-process.
+- Если `cache_hit_rate{layer="l1"}` стабильно <50% и при этом нет особой выгоды по latency → L1 даёт только накладные расходы, его можно упростить или убрать.
+- Если `db_qps` растёт при падении hit rate CDN и `cache_latency_p99{layer="cdn"}` заметно ниже, чем у backend → пора думать о CDN.
+- Если данные очень чувствительны к свежести (stale_read_rate растёт при любых задержках) → слой с длинным TTL (часто CDN) лучше отключить для этих эндпоинтов.
 
 ---
 
