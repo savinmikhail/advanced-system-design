@@ -1374,6 +1374,32 @@ graph TB
 
 Уже разобрали выше — только один запрос идёт в БД.
 
+Визуально это можно показать так:
+
+```mermaid
+sequenceDiagram
+    participant C1 as Клиент 1
+    participant C2 as Клиент 2
+    participant Cn as Клиенты N...
+    participant S as Backend с single flight
+    participant DB as БД
+
+    Note over C1,Cn: 100 одинаковых запросов на product:123
+
+    C1->>S: GET /products/123
+    C2->>S: GET /products/123
+    Cn->>S: GET /products/123
+
+    Note over S: Группируем по ключу product:123
+
+    S->>DB: SELECT * FROM products WHERE id=123
+    DB-->>S: Ответ с данными товара
+
+    S-->>C1: Ответ (shared)
+    S-->>C2: Ответ (shared)
+    S-->>Cn: Ответ (shared)
+```
+
 #### Решение 2: Early Refresh (заглядывание вперёд)
 
 ```python
