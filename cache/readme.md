@@ -15,8 +15,8 @@
 В реальности кэш — это не просто "ускоритель". Это архитектурный компонент, который может как спасти вашу систему под нагрузкой, так и создать труднодебажимые баги, из-за которых пользователи видят неправильные данные.
 
 В этой части мы разберём три ключевых вопроса:
-1. Как держать копии данных синхронными в распределённой системе? (Cache Coherence)
-2. Как правильно распределить данные по уровням кэша? (Многоуровневое кэширование)
+1. Как правильно распределить данные по уровням кэша? (Многоуровневое кэширование)
+2. Как держать копии данных синхронными в распределённой системе? (Cache Coherence)
 3. Что делать, когда всё ломается под нагрузкой? (Сложные проблемы)
 
 Для примеров я буду использовать маркетплейс с миллионами товаров, корзинами, заказами — всё как в реальной жизни.
@@ -98,36 +98,50 @@ graph TB
 
 Давайте разберём самый популярный паттерн — **Cache-Aside** (lazy loading).
 
-**Псевдокод для запроса карточки товара:**
+**Псевдокод для запроса карточки товара (PHP + Symfony):**
 
-```python
-def get_product(product_id):
-    # Шаг 1: Проверяем Redis
-    cache_key = f"product:{product_id}"
-    data = redis.get(cache_key)
-    
-    if data is not None:
-        # Cache HIT! Возвращаем сразу
-        return json.loads(data)
-    
-    # Cache MISS — идём в базу
-    # Шаг 2: Запрос в PostgreSQL
-    data = db.query(
-        "SELECT * FROM products WHERE id = ?", 
-        product_id
-    )
-    
-    if data is None:
-        return None  # Товар не найден
-    
-    # Шаг 3: Кладём в кэш с TTL 5 минут
-    redis.set(
-        cache_key, 
-        json.dumps(data), 
-        ex=300  # TTL = 300 секунд
-    )
-    
-    return data
+```php
+<?php
+
+use Doctrine\DBAL\Connection;
+use Psr\Cache\CacheItemPoolInterface;
+
+final class ProductService
+{
+    public function __construct(
+        private Connection $connection,
+        private CacheItemPoolInterface $cache, // Symfony Cache (Redis adapter)
+    ) {}
+
+    public function getProduct(int $productId): ?array
+    {
+        // Шаг 1: проверяем Redis (через Symfony Cache)
+        $cacheKey = sprintf('product.%d', $productId);
+        $item = $this->cache->getItem($cacheKey);
+
+        if ($item->isHit()) {
+            // Cache HIT — возвращаем данные из кэша
+            return $item->get();
+        }
+
+        // Шаг 2: Cache MISS — идём в PostgreSQL
+        $product = $this->connection->fetchAssociative(
+            'SELECT * FROM products WHERE id = :id',
+            ['id' => $productId],
+        );
+
+        if ($product === false) {
+            return null; // Товар не найден
+        }
+
+        // Шаг 3: кладём в кэш с TTL 5 минут
+        $item->set($product);
+        $item->expiresAfter(300);
+        $this->cache->save($item);
+
+        return $product;
+    }
+}
 ```
 
 **Flow запроса "товар ID=123":**
@@ -269,18 +283,34 @@ Cache coherence — это именно про **кэши**, а не про ис
 
 Давайте посмотрим, как возникает классическая гонка при обновлении.
 
-**Код обновления товара:**
+**Код обновления товара (PHP + Symfony, DBAL + Redis):**
 
-```python
-def update_product(product_id, new_price):
-    # Шаг 1: Обновляем БД
-    db.execute(
-        "UPDATE products SET price = ? WHERE id = ?",
-        new_price, product_id
-    )
-    
-    # Шаг 2: Инвалидируем кэш
-    redis.delete(f"product:{product_id}")
+```php
+<?php
+
+use Doctrine\DBAL\Connection;
+use Predis\Client as RedisClient;
+
+final class ProductPriceUpdater
+{
+    public function __construct(
+        private Connection $connection,
+        private RedisClient $redis,
+    ) {}
+
+    public function updateProduct(int $productId, float $newPrice): void
+    {
+        // Шаг 1: обновляем БД
+        $this->connection->executeStatement(
+            'UPDATE products SET price = :price WHERE id = :id',
+            ['price' => $newPrice, 'id' => $productId],
+        );
+
+        // Шаг 2: инвалидируем кэш
+        $cacheKey = sprintf('product.%d', $productId);
+        $this->redis->del([$cacheKey]);
+    }
+}
 ```
 
 **Timeline гонки:**
@@ -410,14 +440,52 @@ graph TB
 
 **Идея:** Просто ждём, пока данные протухнут по TTL.
 
-```python
-# Запись
-redis.set("product:123", data, ex=60)  # TTL = 60 секунд
+```php
+<?php
 
-# Обновление
-db.update(...)
-# Ничего не делаем с кэшем!
-# Через 60 секунд данные протухнут сами
+use Doctrine\DBAL\Connection;
+use Predis\Client as RedisClient;
+
+final class TtlOnlyCache
+{
+    public function __construct(
+        private Connection $connection,
+        private RedisClient $redis,
+    ) {}
+
+    public function getProduct(int $productId): ?array
+    {
+        $cacheKey = sprintf('product.%d', $productId);
+        $cached = $this->redis->get($cacheKey);
+
+        if ($cached !== null) {
+            return json_decode($cached, true, flags: JSON_THROW_ON_ERROR);
+        }
+
+        $product = $this->connection->fetchAssociative(
+            'SELECT * FROM products WHERE id = :id',
+            ['id' => $productId],
+        );
+
+        if ($product === false) {
+            return null;
+        }
+
+        // Запись: кладём в Redis с TTL 60 секунд
+        $this->redis->setex($cacheKey, 60, json_encode($product, JSON_THROW_ON_ERROR));
+
+        return $product;
+    }
+
+    public function updateProduct(int $productId, float $newPrice): void
+    {
+        // Обновляем только БД — кэш протухнет сам по TTL
+        $this->connection->executeStatement(
+            'UPDATE products SET price = :price WHERE id = :id',
+            ['price' => $newPrice, 'id' => $productId],
+        );
+    }
+}
 ```
 
 **Плюсы:**
@@ -438,24 +506,58 @@ db.update(...)
 
 **Идея:** При изменении данных посылаем событие, которое инвалидирует кэш на всех серверах.
 
-```python
-# Обновление товара
-def update_product(product_id, data):
-    # 1. Обновляем БД
-    db.update(product_id, data)
-    
-    # 2. Публикуем событие
-    event_bus.publish("product.updated", {
-        "id": product_id,
-        "timestamp": now()
-    })
+```php
+<?php
 
-# На ВСЕХ backend-серверах подписка:
-event_bus.subscribe("product.updated", lambda event: {
-    # Инвалидируем во всех слоях
-    redis.delete(f"product:{event.id}")
-    local_cache.delete(f"product:{event.id}")
-})
+use Doctrine\DBAL\Connection;
+use Symfony\Component\Messenger\MessageBusInterface;
+use Predis\Client as RedisClient;
+use Psr\Cache\CacheItemPoolInterface;
+
+final class ProductUpdatedEvent
+{
+    public function __construct(
+        public readonly int $productId,
+        public readonly \DateTimeImmutable $occurredAt,
+    ) {}
+}
+
+final class ProductServiceWithEvents
+{
+    public function __construct(
+        private Connection $connection,
+        private MessageBusInterface $eventBus,
+    ) {}
+
+    // Обновление товара
+    public function updateProduct(int $productId, array $data): void
+    {
+        // 1. Обновляем БД
+        $this->connection->update('products', $data, ['id' => $productId]);
+
+        // 2. Публикуем событие
+        $this->eventBus->dispatch(
+            new ProductUpdatedEvent($productId, new \DateTimeImmutable()),
+        );
+    }
+}
+
+// На ВСЕХ backend-серверах слушатель события:
+final class InvalidateProductCacheListener
+{
+    public function __construct(
+        private RedisClient $redis,
+        private CacheItemPoolInterface $localCache,
+    ) {}
+
+    public function __invoke(ProductUpdatedEvent $event): void
+    {
+        // Инвалидируем во всех слоях
+        $cacheKey = sprintf('product.%d', $event->productId);
+        $this->redis->del([$cacheKey]);
+        $this->localCache->deleteItem($cacheKey);
+    }
+}
 ```
 
 **Архитектура с Pub/Sub:**
@@ -498,27 +600,66 @@ graph TB
 
 **Идея:** Только владелец "лизинга" может обновить кэш. При обновлении в БД все лизинги аннулируются.
 
-```python
-# Запрос с лизингом
-def get_product_with_lease(product_id):
-    # Получаем данные + lease token
-    data, lease_token = cache_with_lease.get(product_id)
-    
-    if data is None:
-        data = db.query(product_id)
-        # Записываем только если наш lease всё ещё валидный
-        cache_with_lease.set_if_lease_valid(
-            product_id, 
-            data, 
-            lease_token
-        )
-    
-    return data
+```php
+<?php
 
-# Обновление — инвалидирует все лизинги
-def update_product(product_id, new_data):
-    db.update(product_id, new_data)
-    cache_with_lease.invalidate_all_leases(product_id)
+use Doctrine\DBAL\Connection;
+use Predis\Client as RedisClient;
+
+final class LeaseBasedCache
+{
+    public function __construct(
+        private Connection $connection,
+        private RedisClient $redis,
+    ) {}
+
+    // Запрос с "лизингом"
+    public function getProductWithLease(int $productId): ?array
+    {
+        $cacheKey = sprintf('product.%d', $productId);
+        $leaseKey = sprintf('product.%d.lease', $productId);
+
+        // Получаем lease token (версию)
+        $leaseToken = (int) ($this->redis->get($leaseKey) ?? 0);
+        $cached = $this->redis->get($cacheKey);
+
+        if ($cached !== null) {
+            return json_decode($cached, true, flags: JSON_THROW_ON_ERROR);
+        }
+
+        // Cache miss — читаем из БД
+        $product = $this->connection->fetchAssociative(
+            'SELECT * FROM products WHERE id = :id',
+            ['id' => $productId],
+        );
+
+        if ($product === false) {
+            return null;
+        }
+
+        // Пишем в кэш только если lease не изменился
+        $currentLease = (int) ($this->redis->get($leaseKey) ?? 0);
+        if ($currentLease === $leaseToken) {
+            $this->redis->setex(
+                $cacheKey,
+                300,
+                json_encode($product, JSON_THROW_ON_ERROR),
+            );
+        }
+
+        return $product;
+    }
+
+    // Обновление — инвалидирует все "лизинги"
+    public function updateProduct(int $productId, array $newData): void
+    {
+        $this->connection->update('products', $newData, ['id' => $productId]);
+
+        // Увеличиваем lease версию: все старые токены считаются невалидными
+        $leaseKey = sprintf('product.%d.lease', $productId);
+        $this->redis->incr($leaseKey);
+    }
+}
 ```
 
 **Плюсы:**
@@ -569,10 +710,10 @@ Lease-based кэширование похоже на fencing tokens в расп�
 - Допустимо eventual consistency до 5 секунд
 
 **Решение:**
-```python
-# L1 (in-process): TTL 30 секунд
-# L2 (Redis): TTL 5 минут
-# Инвалидация: pub/sub при обновлении профиля
+```php
+// L1 (in-process): TTL 30 секунд
+// L2 (Redis): TTL 5 минут
+// Инвалидация: pub/sub при обновлении профиля
 ```
 
 #### Кейс 2: Баланс пользователя
@@ -583,10 +724,10 @@ Lease-based кэширование похоже на fencing tokens в расп�
 - Strong consistency
 
 **Решение:**
-```python
-# Кэш только для СНИЖЕНИЯ нагрузки, но НЕ источник истины
-# L2 (Redis): TTL 5 секунд, lease-based
-# При любой операции с деньгами — ВСЕГДА проверка по БД
+```php
+// Кэш только для СНИЖЕНИЯ нагрузки, но НЕ источник истины
+// L2 (Redis): TTL 5 секунд, lease-based
+// При любой операции с деньгами — ВСЕГДА проверка по БД
 ```
 
 #### Кейс 3: Остатки товара на складе
@@ -597,32 +738,35 @@ Lease-based кэширование похоже на fencing tokens в расп�
 - Допустимо показывать чуть завышенные остатки
 
 **Решение:**
-```python
-# Показываем из кэша (TTL 10 секунд)
-# При добавлении в корзину — проверка по БД
-# При оплате — финальная проверка по БД с блокировкой
+```php
+// Показываем из кэша (TTL 10 секунд)
+// При добавлении в корзину — проверка по БД
+// При оплате — финальная проверка по БД с блокировкой
 ```
 
 ### 2.9. Наблюдаемость coherence
 
 **Ключевые метрики:**
 
-```python
-# 1. Доля stale reads (через версионирование)
-stale_read_rate = stale_reads / total_reads
-# Target: < 1% для некритичных данных, < 0.01% для критичных
+```php
+<?php
 
-# 2. Hit rate по уровням
-l1_hit_rate = l1_hits / l1_requests  # Target: 60-80%
-l2_hit_rate = l2_hits / l2_requests  # Target: 80-95%
+// 1. Доля stale reads (через версионирование)
+// Target: < 1% для некритичных данных, < 0.01% для критичных
+$staleReadRate = $staleReads / $totalReads;
 
-# 3. Latency инвалидации
-invalidation_latency = time(event_published) - time(cache_cleared)
-# Target: < 1 секунда
+// 2. Hit rate по уровням
+// Target: L1 = 60–80%, L2 = 80–95%
+$l1HitRate = $l1Hits / $l1Requests;
+$l2HitRate = $l2Hits / $l2Requests;
 
-# 4. Частота инвалидаций
-invalidation_rate = events_per_second
-# Мониторим спайки — может указывать на проблему
+// 3. Latency инвалидации
+// Target: < 1 секунда
+$invalidationLatency = $timeCacheCleared - $timeEventPublished;
+
+// 4. Частота инвалидаций
+// Важны спайки — могут указывать на проблему с инвалидацией или данными
+$invalidationRate = $eventsPerSecond;
 ```
 
 **Chaos testing:**
@@ -693,9 +837,6 @@ graph TB
 
 ### 3.1. Боль многоуровневого кэширования
 
-Мы хотим отдавать данные как можно ближе к пользователю. Зачем тянуть картинку из S3 в БД, если её может отдать CDN за 10ms? Зачем каждый раз ходить в Redis (2-5ms), если можно держать маленький L1-кэш прямо в памяти сервера (<1ms)?
-
-**Но:** чем больше слоёв, тем сложнее поддерживать согласованность.
 
 Про CDN здесь важно проговорить простую модель: провайдер держит копии наших ответов на edge‑узлах по миру — пользователи из Новосибирска, Берлина и Москвы попадают на ближайший к ним edge и читают кэш "локально", не долетая до нашего датацентра. За это платим тем, что инвалидация и обновление проходят через сеть до всех edge‑узлов, поэтому CDN почти всегда живёт с более длинным TTL и более слабой свежестью данных, чем backend‑кэш.
 
@@ -816,37 +957,39 @@ sequenceDiagram
 
 **Метрики по слоям (типичные значения):**
 
-```python
-# Пример метрик за 1 час для товара #123
-total_requests = 100_000
+```php
+<?php
 
-# Браузер (разные пользователи)
-browser_hits = 0  # Каждый пользователь свой браузер
+// Пример метрик за 1 час для товара #123
+$totalRequests = 100_000;
 
-# CDN
-cdn_requests = 100_000
-cdn_hits = 95_000  # 95% hit rate
-cdn_misses = 5_000
+// Браузер (разные пользователи)
+$browserHits = 0; // Каждый пользователь свой браузер
 
-# L1 (на одном из 10 backend-серверов)
-l1_requests = 500  # 5000 / 10 серверов
-l1_hits = 400      # 80% hit rate
-l1_misses = 100
+// CDN
+$cdnRequests = 100_000;
+$cdnHits     = 95_000;  // 95% hit rate
+$cdnMisses   = 5_000;
 
-# L2 Redis
-l2_requests = 100 + 4900  # misses от всех L1 + свои запросы
-l2_hits = 4500     # 90% hit rate
-l2_misses = 500
+// L1 (на одном из 10 backend-серверов)
+$l1Requests = 500;  // 5000 / 10 серверов
+$l1Hits     = 400;  // 80% hit rate
+$l1Misses   = 100;
 
-# DB
-db_requests = 500  # Только холодные запросы
+// L2 Redis
+$l2Requests = 100 + 4_900; // misses от всех L1 + свои запросы
+$l2Hits     = 4_500;       // 90% hit rate
+$l2Misses   = 500;
 
-# Средняя latency
-avg_latency = (
-    95_000 * 10ms +      # CDN hits
-    4_500 * 3ms +        # Redis hits
-    500 * 50ms           # DB queries
-) / 100_000 = 12.9ms ✅
+// DB
+$dbRequests = 500; // Только холодные запросы
+
+// Средняя latency (условные цифры для примера)
+$avgLatencyMs = (
+    95_000 * 10  + // CDN hits
+    4_500 * 3   + // Redis hits
+    500   * 50    // DB queries
+) / $totalRequests; // ≈ 12.9ms ✅
 ```
 
 **Без кэша:** 100k * 50ms = 5000 секунд CPU времени БД  
@@ -868,47 +1011,81 @@ graph LR
     class A,B,C,D,E step;
 ```
 
-**Псевдокод:**
+**Псевдокод (PHP + Symfony):**
 
-```python
-def update_product_price(product_id, new_price):
-    # 1. Обновляем source of truth
-    db.execute(
-        "UPDATE products SET price = ?, updated_at = NOW() WHERE id = ?",
-        new_price, product_id
-    )
-    
-    # 2. Публикуем событие для всех подписчиков
-    event = {
-        "type": "product.price_updated",
-        "product_id": product_id,
-        "new_price": new_price,
-        "timestamp": datetime.now().isoformat()
+```php
+<?php
+
+use Doctrine\DBAL\Connection;
+use Symfony\Component\Messenger\MessageBusInterface;
+use Predis\Client as RedisClient;
+use Psr\Cache\CacheItemPoolInterface;
+
+final class ProductPriceUpdatedEvent
+{
+    public function __construct(
+        public readonly int $productId,
+        public readonly float $newPrice,
+        public readonly ?float $oldPrice = null,
+    ) {}
+}
+
+final class ProductPriceService
+{
+    public function __construct(
+        private Connection $connection,
+        private MessageBusInterface $eventBus,
+    ) {}
+
+    public function updateProductPrice(int $productId, float $newPrice): void
+    {
+        // 1. Обновляем source of truth
+        $oldPrice = (float) $this->connection->fetchOne(
+            'SELECT price FROM products WHERE id = :id',
+            ['id' => $productId],
+        );
+
+        $this->connection->executeStatement(
+            'UPDATE products SET price = :price, updated_at = NOW() WHERE id = :id',
+            ['price' => $newPrice, 'id' => $productId],
+        );
+
+        // 2. Публикуем событие для всех подписчиков
+        $this->eventBus->dispatch(
+            new ProductPriceUpdatedEvent($productId, $newPrice, $oldPrice),
+        );
     }
-    
-    event_bus.publish("product.updated", event)
-    
-    # Подписчики на событие (на каждом backend-сервере):
-    # - Очищают L1
-    # - Очищают L2 Redis
-    # - Опционально: отправляют purge в CDN
+}
 
-# На каждом backend-сервере:
-@event_bus.subscribe("product.updated")
-def handle_product_update(event):
-    product_id = event["product_id"]
-    
-    # Инвалидация L1 (локальный кэш этого сервера)
-    l1_cache.delete(f"product:{product_id}")
-    
-    # Инвалидация L2 (Redis, shared)
-    redis.delete(f"product:{product_id}")
-    redis.delete(f"product:card:{product_id}")  # Может быть несколько ключей
-    
-    # Опционально: CDN purge для критичных данных
-    if event["new_price"] < event.get("old_price", float('inf')):
-        # Цена упала — важно показать быстрее!
-        cdn_api.purge_url(f"/products/{product_id}")
+// На каждом backend-сервере:
+final class ProductCacheInvalidationListener
+{
+    public function __construct(
+        private CacheItemPoolInterface $l1Cache,
+        private RedisClient $redis,
+        private CdnApiClient $cdnApi,
+    ) {}
+
+    public function __invoke(ProductPriceUpdatedEvent $event): void
+    {
+        $productId = $event->productId;
+
+        // Инвалидация L1 (локальный кэш этого сервера)
+        $this->l1Cache->deleteItem(sprintf('product.%d', $productId));
+
+        // Инвалидация L2 (Redis, shared)
+        $this->redis->del([
+            sprintf('product.%d', $productId),
+            sprintf('product.card.%d', $productId),
+        ]);
+
+        // Опционально: CDN purge для критичных данных
+        if ($event->oldPrice !== null && $event->newPrice < $event->oldPrice) {
+            // Цена упала — важно показать быстрее!
+            $this->cdnApi->purgeUrl(sprintf('/products/%d', $productId));
+        }
+    }
+}
 ```
 
 **Важно:** Инвалидация через `DELETE`, а не через `SET new_value`!
@@ -923,63 +1100,85 @@ def handle_product_update(event):
 **Проблема:** Изменилась цена всей категории "Электроника" (10,000 товаров). Как инвалидировать?
 
 **Наивный подход:**
-```python
-# ❌ Плохо: 10,000 DELETE запросов к Redis
-for product_id in electronics_products:
-    redis.delete(f"product:{product_id}")
+```php
+<?php
+
+// ❌ Плохо: 10,000 DELETE запросов к Redis подряд
+foreach ($electronicsProducts as $productId) {
+    $redis->del([sprintf('product.%d', $productId)]);
+}
 ```
 
 **Лучше: тегирование ключей**
 
-```python
-# При записи в кэш добавляем теги
-redis.set(f"product:{product_id}", data)
-redis.sadd(f"tag:category:electronics", f"product:{product_id}")
+```php
+<?php
 
-# При обновлении категории
-def update_category_prices(category_id, discount_percent):
-    # 1. Обновляем БД
-    db.execute(
-        "UPDATE products SET price = price * (1 - ?) WHERE category_id = ?",
-        discount_percent, category_id
-    )
-    
-    # 2. Массовая инвалидация по тегу
-    tagged_keys = redis.smembers(f"tag:category:{category_id}")
-    
-    if len(tagged_keys) < 1000:
-        # Мало ключей — удаляем по одному
-        redis.delete(*tagged_keys)
-    else:
-        # Много ключей — увеличиваем версию тега
-        redis.incr(f"tag:category:{category_id}:version")
-        # Старые ключи протухнут по TTL
+// При записи в кэш добавляем теги
+$redis->set(sprintf('product.%d', $productId), json_encode($data, JSON_THROW_ON_ERROR));
+$redis->sadd('tag:category:electronics', [sprintf('product.%d', $productId)]);
+
+// При обновлении категории
+function updateCategoryPrices(int $categoryId, float $discountPercent, Connection $db, RedisClient $redis): void {
+    // 1. Обновляем БД
+    $db->executeStatement(
+        'UPDATE products SET price = price * (1 - :discount) WHERE category_id = :category_id',
+        ['discount' => $discountPercent, 'category_id' => $categoryId],
+    );
+
+    // 2. Массовая инвалидация по тегу
+    $tagKey = sprintf('tag:category:%d', $categoryId);
+    $taggedKeys = $redis->smembers($tagKey);
+
+    if (\count($taggedKeys) < 1000) {
+        // Мало ключей — удаляем по одному
+        if ($taggedKeys !== []) {
+            $redis->del($taggedKeys);
+        }
+    } else {
+        // Много ключей — увеличиваем версию тега
+        $redis->incr(sprintf('%s:version', $tagKey));
+        // Старые ключи протухнут по TTL
+    }
+}
 ```
 
 **Схема версионирования тегов:**
 
-```python
-# Чтение с версионированием
-def get_product_with_tag(product_id, category_id):
-    # Получаем текущую версию тега категории
-    tag_version = redis.get(f"tag:category:{category_id}:version") or "0"
-    
-    # Ключ включает версию
-    cache_key = f"product:{product_id}:v{tag_version}"
-    
-    data = redis.get(cache_key)
-    if data:
-        return json.loads(data)
-    
-    # Cache miss
-    data = db.query(product_id)
-    redis.set(cache_key, json.dumps(data), ex=300)
-    return data
+```php
+<?php
 
-# При обновлении категории просто увеличиваем версию
-redis.incr(f"tag:category:{category_id}:version")
-# Все старые ключи с v0 станут недоступны
-# Новые запросы будут использовать v1
+// Чтение с версионированием
+function getProductWithTag(int $productId, int $categoryId, Connection $db, RedisClient $redis): ?array {
+    // Получаем текущую версию тега категории
+    $tagVersion = $redis->get(sprintf('tag:category:%d:version', $categoryId)) ?? '0';
+
+    // Ключ включает версию
+    $cacheKey = sprintf('product.%d.v%s', $productId, $tagVersion);
+
+    $cached = $redis->get($cacheKey);
+    if ($cached !== null) {
+        return json_decode($cached, true, flags: JSON_THROW_ON_ERROR);
+    }
+
+    // Cache miss
+    $product = $db->fetchAssociative(
+        'SELECT * FROM products WHERE id = :id',
+        ['id' => $productId],
+    );
+
+    if ($product === false) {
+        return null;
+    }
+
+    $redis->setex($cacheKey, 300, json_encode($product, JSON_THROW_ON_ERROR));
+
+    return $product;
+}
+
+// При обновлении категории просто увеличиваем версию
+$redis->incr(sprintf('tag:category:%d:version', $categoryId));
+// Все старые ключи с v0 станут недоступны, новые запросы будут использовать v1
 ```
 
 ### 3.6. Версионирование при деплоях
@@ -987,30 +1186,54 @@ redis.incr(f"tag:category:{category_id}:version")
 **Проблема:** Деплоим новую версию кода, меняется схема данных в кэше.
 
 **Пример:**
-```python
-# Старая версия кода
-product = {"id": 123, "name": "iPhone", "price": 1000}
+```php
+<?php
 
-# Новая версия кода (добавили поле discount)
-product = {"id": 123, "name": "iPhone", "price": 1000, "discount": 0.1}
+// Старая версия кода
+$productV1 = [
+    'id'    => 123,
+    'name'  => 'iPhone',
+    'price' => 1000,
+];
+
+// Новая версия кода (добавили поле discount)
+$productV2 = [
+    'id'       => 123,
+    'name'     => 'iPhone',
+    'price'    => 1000,
+    'discount' => 0.1,
+];
 ```
 
 **Решение: версионирование ключей**
 
-```python
-# Версия схемы в константе
-CACHE_SCHEMA_VERSION = "v2"
+```php
+<?php
 
-def get_product(product_id):
-    cache_key = f"product:{product_id}:{CACHE_SCHEMA_VERSION}"
-    
-    data = redis.get(cache_key)
-    if data:
-        return json.loads(data)
-    
-    data = db.query(product_id)
-    redis.set(cache_key, json.dumps(data), ex=300)
-    return data
+// Версия схемы в константе
+const CACHE_SCHEMA_VERSION = 'v2';
+
+function getProductWithSchemaVersion(int $productId, Connection $db, RedisClient $redis): ?array {
+    $cacheKey = sprintf('product.%d.%s', $productId, CACHE_SCHEMA_VERSION);
+
+    $cached = $redis->get($cacheKey);
+    if ($cached !== null) {
+        return json_decode($cached, true, flags: JSON_THROW_ON_ERROR);
+    }
+
+    $product = $db->fetchAssociative(
+        'SELECT * FROM products WHERE id = :id',
+        ['id' => $productId],
+    );
+
+    if ($product === false) {
+        return null;
+    }
+
+    $redis->setex($cacheKey, 300, json_encode($product, JSON_THROW_ON_ERROR));
+
+    return $product;
+}
 ```
 
 **Blue-Green deploy с кэшем:**
@@ -1080,28 +1303,59 @@ graph TB
 
 **Решение A: Репликация в L1**
 
-```python
-# Храним hot keys локально на каждом backend-сервере
-HOT_KEYS = {"product:12345"}  # Товар дня
+```php
+<?php
 
-def get_product(product_id):
-    cache_key = f"product:{product_id}"
-    
-    # Для hot keys — всегда проверяем L1 первым
-    if cache_key in HOT_KEYS:
-        data = l1_cache.get(cache_key)
-        if data:
-            return data
-        
-        # L1 miss — идём в Redis, но с коротким TTL
-        data = redis.get(cache_key)
-        if data:
-            # Сохраняем в L1 с коротким TTL (30 секунд)
-            l1_cache.set(cache_key, data, ttl=30)
-            return data
-    
-    # Обычная логика для не-hot keys
-    return get_from_redis_or_db(product_id)
+use Doctrine\DBAL\Connection;
+use Predis\Client as RedisClient;
+
+final class HotKeysProductService
+{
+    private const HOT_KEYS = ['product:12345']; // Товар дня
+
+    public function __construct(
+        private Connection $connection,
+        private RedisClient $redis,
+        private \Psr\SimpleCache\CacheInterface $l1Cache, // in-memory L1 (например, ArrayCache)
+    ) {}
+
+    public function getProduct(int $productId): ?array
+    {
+        $cacheKey = sprintf('product:%d', $productId);
+
+        // Для hot keys — всегда проверяем L1 первым
+        if (\in_array($cacheKey, self::HOT_KEYS, true)) {
+            $data = $this->l1Cache->get($cacheKey);
+            if ($data !== null) {
+                return $data;
+            }
+
+            // L1 miss — идём в Redis, но с коротким TTL
+            $cached = $this->redis->get($cacheKey);
+            if ($cached !== null) {
+                $product = json_decode($cached, true, flags: JSON_THROW_ON_ERROR);
+                // Сохраняем в L1 с коротким TTL (30 секунд)
+                $this->l1Cache->set($cacheKey, $product, 30);
+
+                return $product;
+            }
+        }
+
+        // Обычная логика для не-hot keys
+        $product = $this->connection->fetchAssociative(
+            'SELECT * FROM products WHERE id = :id',
+            ['id' => $productId],
+        );
+
+        if ($product === false) {
+            return null;
+        }
+
+        $this->redis->setex($cacheKey, 300, json_encode($product, JSON_THROW_ON_ERROR));
+
+        return $product;
+    }
+}
 ```
 
 **Результат:** 100k RPS распределяются по 10 backend-серверам = 10k RPS на сервер из L1 (легко).
@@ -1156,100 +1410,145 @@ graph TB
 
 **Решение: Batch pre-warming**
 
-```python
-# При старте сервера
-def warmup_cache():
-    logger.info("Starting cache warmup...")
-    
-    # Загружаем топ-1000 товаров из БД
-    top_products = db.query("""
-        SELECT * FROM products 
-        ORDER BY views_last_24h DESC 
-        LIMIT 1000
-    """)
-    
-    # Кладём в кэш батчами по 100
-    for batch in chunks(top_products, 100):
-        pipeline = redis.pipeline()
-        for product in batch:
-            key = f"product:{product.id}"
-            pipeline.set(key, json.dumps(product), ex=300)
-        pipeline.execute()
-        
-        time.sleep(0.1)  # Не убиваем Redis
-    
-    logger.info(f"Warmed up {len(top_products)} products")
+```php
+<?php
 
-# В main()
-if __name__ == "__main__":
-    warmup_cache()
-    start_server()
+use Doctrine\DBAL\Connection;
+use Predis\Client as RedisClient;
+use Psr\Log\LoggerInterface;
+
+final class CacheWarmupCommand
+{
+    public function __construct(
+        private Connection $connection,
+        private RedisClient $redis,
+        private LoggerInterface $logger,
+    ) {}
+
+    // При старте сервиса / отдельной команды
+    public function warmup(): void
+    {
+        $this->logger->info('Starting cache warmup...');
+
+        // Загружаем топ-1000 товаров из БД
+        $topProducts = $this->connection->fetchAllAssociative(
+            'SELECT * FROM products 
+             ORDER BY views_last_24h DESC 
+             LIMIT 1000',
+        );
+
+        // Кладём в кэш батчами по 100
+        foreach (array_chunk($topProducts, 100) as $batch) {
+            $this->redis->pipeline(function (RedisClient $pipe) use ($batch): void {
+                foreach ($batch as $product) {
+                    $key = sprintf('product:%d', $product['id']);
+                    $pipe->setex($key, 300, json_encode($product, JSON_THROW_ON_ERROR));
+                }
+            });
+
+            usleep(100_000); // 0.1s — не убиваем Redis
+        }
+
+        $this->logger->info(sprintf('Warmed up %d products', \count($topProducts)));
+    }
+}
 ```
 
 **Метрики warmup:**
 
-```python
-# Цель: достичь 80% hit rate за 2 минуты после старта
+```php
+<?php
 
-time_to_80_percent_hit_rate = measure_warmup()
-# Хорошо: < 2 минуты
-# Плохо: > 5 минут — нужно оптимизировать warmup
+// Цель: достичь 80% hit rate за 2 минуты после старта
+$timeTo80PercentHitRate = measureWarmup(); // пользовательская метрика
+// Хорошо: < 2 минуты
+// Плохо: > 5 минут — нужно оптимизировать warmup
 ```
 
 #### Проблема 4: Request Coalescing (single flight)
 
 **Сценарий:** 100 запросов одновременно на один ключ, которого нет в кэше.
 
-**Наивный код:**
-```python
-# ❌ Плохо: 100 запросов пойдут в БД одновременно
-def get_product(product_id):
-    data = redis.get(f"product:{product_id}")
-    if data is None:
-        data = db.query(product_id)  # 100 параллельных запросов!
-        redis.set(f"product:{product_id}", data, ex=300)
-    return data
-```
+**Наивный код (PHP):**
+```php
+<?php
 
-**С single flight (Golang пример):**
+// ❌ Плохо: 100 запросов пойдут в БД одновременно
+function getProductNaive(int $productId, Connection $db, RedisClient $redis): ?array {
+    $cacheKey = sprintf('product:%d', $productId);
+    $cached = $redis->get($cacheKey);
 
-```go
-import "golang.org/x/sync/singleflight"
+    if ($cached === null) {
+        // 100 параллельных запросов в БД при stampede
+        $product = $db->fetchAssociative(
+            'SELECT * FROM products WHERE id = :id',
+            ['id' => $productId],
+        );
 
-var group singleflight.Group
-
-func getProduct(productID int) (*Product, error) {
-    key := fmt.Sprintf("product:%d", productID)
-    
-    // singleflight гарантирует, что только один запрос
-    // пойдёт в БД, остальные подождут результата
-    v, err, shared := group.Do(key, func() (interface{}, error) {
-        // Проверяем Redis
-        data, err := redis.Get(key)
-        if err == nil {
-            return data, nil
+        if ($product === false) {
+            return null;
         }
-        
-        // Идём в БД (только один поток!)
-        product, err := db.Query(productID)
-        if err != nil {
-            return nil, err
-        }
-        
-        // Кладём в Redis
-        redis.Set(key, product, 300*time.Second)
-        return product, nil
-    })
-    
-    if shared {
-        log.Printf("Request coalesced for product %d", productID)
+
+        $redis->setex($cacheKey, 300, json_encode($product, JSON_THROW_ON_ERROR));
+
+        return $product;
     }
-    
-    return v.(*Product), err
+
+    return json_decode($cached, true, flags: JSON_THROW_ON_ERROR);
 }
 ```
 
-**Результат:** 100 запросов → 1 запрос в БД ✅
+**С request coalescing (упрощённо, PHP):**
+
+```php
+<?php
+
+final class SingleFlightCache
+{
+    /** @var array<string, \React\Promise\PromiseInterface> */
+    private array $inFlight = [];
+
+    public function __construct(
+        private Connection $connection,
+        private RedisClient $redis,
+    ) {}
+
+    public function getProduct(int $productId): \React\Promise\PromiseInterface
+    {
+        $cacheKey = sprintf('product:%d', $productId);
+
+        // Если запрос уже летит в БД — возвращаем тот же Promise
+        if (isset($this->inFlight[$cacheKey])) {
+            return $this->inFlight[$cacheKey];
+        }
+
+        $this->inFlight[$cacheKey] = \React\Promise\resolve()->then(function () use ($cacheKey, $productId) {
+            $cached = $this->redis->get($cacheKey);
+            if ($cached !== null) {
+                return json_decode($cached, true, flags: JSON_THROW_ON_ERROR);
+            }
+
+            // Идём в БД только один раз
+            $product = $this->connection->fetchAssociative(
+                'SELECT * FROM products WHERE id = :id',
+                ['id' => $productId],
+            );
+
+            if ($product !== false) {
+                $this->redis->setex($cacheKey, 300, json_encode($product, JSON_THROW_ON_ERROR));
+            }
+
+            unset($this->inFlight[$cacheKey]);
+
+            return $product === false ? null : $product;
+        });
+
+        return $this->inFlight[$cacheKey];
+    }
+}
+```
+
+**Результат:** 100 запросов → 1 поход в БД ✅
 
 ### 3.8. Метрики и наблюдаемость
 
@@ -1267,20 +1566,22 @@ graph TB
 
 Для реализации это обычно раскладывается в несколько метрик (Prometheus / Grafana):
 
-```python
-# Примеры имён метрик
-cache_hit_rate{layer="l1"}
-cache_hit_rate{layer="l2"}
-cache_hit_rate{layer="cdn"}
+```php
+<?php
 
-cache_latency_p99{layer="l1"}
-cache_latency_p99{layer="l2"}
-cache_latency_p99{layer="cdn"}
-db_latency_p99
+// Примеры имён метрик
+// cache_hit_rate{layer="l1"}
+// cache_hit_rate{layer="l2"}
+// cache_hit_rate{layer="cdn"}
 
-cache_invalidations_per_sec
-cache_hot_keys_detected
-stale_read_rate
+// cache_latency_p99{layer="l1"}
+// cache_latency_p99{layer="l2"}
+// cache_latency_p99{layer="cdn"}
+// db_latency_p99
+
+// cache_invalidations_per_sec
+// cache_hot_keys_detected
+// stale_read_rate
 ```
 
 **Когда добавить/убрать слой кэша (как читать дэшборд):**
@@ -1394,51 +1695,86 @@ sequenceDiagram
 
 #### Решение 2: Early Refresh (заглядывание вперёд)
 
-```python
-import time
+```php
+<?php
 
-def get_product_with_early_refresh(product_id):
-    cache_key = f"product:{product_id}"
-    TTL = 300  # 5 минут
-    EARLY_REFRESH_WINDOW = 30  # 30 секунд до истечения
-    
-    # Получаем данные + timestamp их записи
-    cached = redis.get_with_timestamp(cache_key)
-    
-    if cached is not None:
-        data, cached_at = cached
-        age = time.time() - cached_at
-        
-        # Если до истечения TTL осталось < 30 секунд
-        if age > (TTL - EARLY_REFRESH_WINDOW):
-            # Асинхронно обновляем кэш в фоне
-            asyncio.create_task(refresh_cache_in_background(product_id))
-        
-        # Возвращаем текущие данные (пусть чуть устаревшие)
-        return data
-    
-    # Cache miss — обычная загрузка
-    return load_from_db_and_cache(product_id)
+use Doctrine\DBAL\Connection;
+use Predis\Client as RedisClient;
 
-async def refresh_cache_in_background(product_id):
-    data = await db.query_async(product_id)
-    await redis.set_async(f"product:{product_id}", data, ex=300)
+final class EarlyRefreshCache
+{
+    private const TTL = 300; // 5 минут
+    private const EARLY_REFRESH_WINDOW = 30; // 30 секунд до истечения
+
+    public function __construct(
+        private Connection $connection,
+        private RedisClient $redis,
+    ) {}
+
+    public function getProductWithEarlyRefresh(int $productId): ?array
+    {
+        $cacheKey = sprintf('product:%d', $productId);
+
+        // Получаем данные + timestamp их записи (храним как JSON-объект)
+        $cached = $this->redis->get($cacheKey);
+
+        if ($cached !== null) {
+            $payload = json_decode($cached, true, flags: JSON_THROW_ON_ERROR);
+            $data = $payload['data'];
+            $cachedAt = $payload['cached_at'];
+
+            $age = time() - $cachedAt;
+
+            // Если до истечения TTL осталось < 30 секунд — триггерим refresh в фоне (через очередь/воркер)
+            if ($age > (self::TTL - self::EARLY_REFRESH_WINDOW)) {
+                // Здесь могла бы быть отправка сообщения в очередь на refresh
+                // e.g. $this->refreshQueue->dispatch(new RefreshProductCache($productId));
+            }
+
+            // Возвращаем текущие данные (пусть чуть устаревшие)
+            return $data;
+        }
+
+        // Cache miss — обычная загрузка
+        $product = $this->connection->fetchAssociative(
+            'SELECT * FROM products WHERE id = :id',
+            ['id' => $productId],
+        );
+
+        if ($product === false) {
+            return null;
+        }
+
+        $payload = [
+            'data'      => $product,
+            'cached_at' => time(),
+        ];
+
+        $this->redis->setex($cacheKey, self::TTL, json_encode($payload, JSON_THROW_ON_ERROR));
+
+        return $product;
+    }
+}
 ```
 
 **Результат:** Кэш обновляется до истечения TTL, stampede не происходит.
 
 #### Решение 3: Jittered TTL (рандомизация)
 
-```python
-import random
+```php
+<?php
 
-# ❌ Плохо: все ключи истекают одновременно
-redis.set(key, data, ex=300)  # Ровно 300 секунд
+use Predis\Client as RedisClient;
 
-# ✅ Хорошо: добавляем случайный jitter ±10%
-base_ttl = 300
-jitter = random.randint(-30, 30)  # ±10%
-redis.set(key, data, ex=base_ttl + jitter)
+// ❌ Плохо: все ключи истекают одновременно
+// $redis->setex($key, 300, $data);  // Ровно 300 секунд
+
+// ✅ Хорошо: добавляем случайный jitter ±10%
+$baseTtl = 300;
+$jitter  = random_int(-30, 30); // ±10%
+$ttl     = $baseTtl + $jitter;
+
+$redis->setex($key, $ttl, $data);
 ```
 
 **Результат:** Ключи истекают равномерно во времени, нет одновременного stampede.
@@ -1465,43 +1801,92 @@ redis.set(key, data, ex=base_ttl + jitter)
 
 **Пример: баланс пользователя**
 
-```python
-def get_user_balance(user_id):
-    # Кэш используем только для снижения нагрузки,
-    # НО не как source of truth
-    
-    cache_key = f"balance:{user_id}"
-    cached_balance = redis.get(cache_key)
-    
-    # Для критичных операций ВСЕГДА проверяем БД
-    if is_financial_operation():
-        return db.query_balance(user_id)  # Всегда из БД!
-    
-    # Для отображения можно использовать кэш
-    if cached_balance is not None:
-        return float(cached_balance)
-    
-    # Cache miss
-    balance = db.query_balance(user_id)
-    redis.set(cache_key, balance, ex=5)  # Короткий TTL!
-    return balance
+```php
+<?php
 
-def withdraw_money(user_id, amount):
-    # Критичная операция — всегда из БД с блокировкой
-    with db.transaction():
-        balance = db.query_balance(user_id, for_update=True)  # SELECT FOR UPDATE
-        
-        if balance < amount:
-            raise InsufficientFunds()
-        
-        new_balance = balance - amount
-        db.update_balance(user_id, new_balance)
-        
-        # Инвалидируем кэш
-        redis.delete(f"balance:{user_id}")
-        event_bus.publish("balance.updated", {"user_id": user_id})
-    
-    return new_balance
+use Doctrine\DBAL\Connection;
+use Predis\Client as RedisClient;
+
+final class BalanceService
+{
+    public function __construct(
+        private Connection $connection,
+        private RedisClient $redis,
+    ) {}
+
+    // Кэш используем только для снижения нагрузки, НО не как source of truth
+    public function getUserBalance(int $userId, bool $isFinancialOperation): float
+    {
+        $cacheKey = sprintf('balance:%d', $userId);
+        $cachedBalance = $this->redis->get($cacheKey);
+
+        // Для критичных операций ВСЕГДА проверяем БД
+        if ($isFinancialOperation) {
+            return (float) $this->queryBalance($userId, true);
+        }
+
+        // Для отображения можно использовать кэш
+        if ($cachedBalance !== null) {
+            return (float) $cachedBalance;
+        }
+
+        // Cache miss
+        $balance = $this->queryBalance($userId, false);
+
+        // Короткий TTL — несколько секунд
+        $this->redis->setex($cacheKey, 5, (string) $balance);
+
+        return $balance;
+    }
+
+    public function withdrawMoney(int $userId, float $amount): float
+    {
+        // Критичная операция — всегда из БД с блокировкой
+        $this->connection->beginTransaction();
+        try {
+            $balance = (float) $this->connection->fetchOne(
+                'SELECT balance FROM accounts WHERE user_id = :id FOR UPDATE',
+                ['id' => $userId],
+            );
+
+            if ($balance < $amount) {
+                throw new \RuntimeException('Insufficient funds');
+            }
+
+            $newBalance = $balance - $amount;
+
+            $this->connection->executeStatement(
+                'UPDATE accounts SET balance = :balance WHERE user_id = :id',
+                ['balance' => $newBalance, 'id' => $userId],
+            );
+
+            // Инвалидируем кэш
+            $this->redis->del([sprintf('balance:%d', $userId)]);
+
+            $this->connection->commit();
+
+            return $newBalance;
+        } catch (\Throwable $e) {
+            $this->connection->rollBack();
+            throw $e;
+        }
+    }
+
+    private function queryBalance(int $userId, bool $forUpdate): float
+    {
+        if ($forUpdate) {
+            return (float) $this->connection->fetchOne(
+                'SELECT balance FROM accounts WHERE user_id = :id FOR UPDATE',
+                ['id' => $userId],
+            );
+        }
+
+        return (float) $this->connection->fetchOne(
+            'SELECT balance FROM accounts WHERE user_id = :id',
+            ['id' => $userId],
+        );
+    }
+}
 ```
 
 ### 4.3. Продакшен-инциденты (реальные истории)
@@ -1517,15 +1902,22 @@ def withdraw_money(user_id, amount):
 - 12:10 — Поддержка завалена обращениями
 
 **Root cause:**
-```python
-# Баг в коде обновления цен
-def update_prices_for_sale(product_ids, discount):
-    for product_id in product_ids:
-        # Обновили БД ✅
-        db.update_price(product_id, discount)
-        
-        # Забыли инвалидировать кэш! ❌
-        # redis.delete(f"product:{product_id}")
+```php
+<?php
+
+// Баг в коде обновления цен
+function updatePricesForSale(array $productIds, float $discount, Connection $db, RedisClient $redis): void {
+    foreach ($productIds as $productId) {
+        // Обновили БД ✅
+        $db->executeStatement(
+            'UPDATE products SET price = price * (1 - :discount) WHERE id = :id',
+            ['discount' => $discount, 'id' => $productId],
+        );
+
+        // Забыли инвалидировать кэш! ❌
+        // $redis->del([sprintf("product:%d", $productId)]);
+    }
+}
 ```
 
 **Timeline:**
@@ -1542,23 +1934,31 @@ def update_prices_for_sale(product_ids, discount):
 ```
 
 **Фикс:**
-```python
-def update_prices_for_sale(product_ids, discount):
-    # Батчовое обновление БД
-    db.batch_update_prices(product_ids, discount)
-    
-    # Инвалидация через событие
-    event_bus.publish("prices.bulk_update", {
-        "product_ids": product_ids,
-        "timestamp": now()
-    })
-    
-    # Немедленная инвалидация в Redis
-    if len(product_ids) < 1000:
-        redis.delete(*[f"product:{pid}" for pid in product_ids])
-    else:
-        # Слишком много ключей — увеличиваем версию тега
-        redis.incr("tag:sale:version")
+```php
+<?php
+
+function updatePricesForSaleFixed(array $productIds, float $discount, Connection $db, RedisClient $redis, MessageBusInterface $eventBus): void {
+    // Батчовое обновление БД
+    $db->executeStatement(
+        'UPDATE products SET price = price * (1 - :discount) WHERE id IN (:ids)',
+        ['discount' => $discount, 'ids' => $productIds],
+        ['ids' => Connection::PARAM_INT_ARRAY],
+    );
+
+    // Инвалидация через событие
+    $eventBus->dispatch(new PricesBulkUpdatedEvent($productIds, new \DateTimeImmutable()));
+
+    // Немедленная инвалидация в Redis
+    if (\count($productIds) < 1000) {
+        $keys = array_map(fn (int $id): string => sprintf('product:%d', $id), $productIds);
+        if ($keys !== []) {
+            $redis->del($keys);
+        }
+    } else {
+        // Слишком много ключей — увеличиваем версию тега
+        $redis->incr('tag:sale:version');
+    }
+}
 ```
 
 **Уроки:**
@@ -1628,22 +2028,29 @@ graph TB
 
 **Root cause:**
 
-```python
-# Неправильная настройка Redis eviction
-maxmemory-policy allkeys-random  # ❌ Случайная эвикция!
+```php
+<?php
+
+// Неправильная настройка Redis eviction
+// redis.conf:
+// maxmemory-policy allkeys-random  # ❌ Случайная эвикция!
 ```
 
 Redis выбрасывал случайные ключи, включая горячие товары.
 
 **Фикс:**
-```python
-# Правильная настройка
-maxmemory-policy allkeys-lru  # ✅ LRU eviction
-maxmemory 10gb
+```php
+<?php
 
-# + Мониторинг eviction rate
-if evicted_keys_per_sec > 1000:
-    alert("Redis evicting too much! Increase memory.")
+// Правильная настройка в redis.conf:
+// maxmemory-policy allkeys-lru  # ✅ LRU eviction
+// maxmemory 10gb
+
+// + Мониторинг eviction rate (псевдокод)
+$evictedKeysPerSec = getRedisMetric('evicted_keys_per_sec');
+if ($evictedKeysPerSec > 1000) {
+    alert('Redis evicting too much! Increase memory.');
+}
 ```
 
 ### 4.4. Кэш на собеседовании (подробный разбор)
@@ -1812,24 +2219,44 @@ if evicted_keys_per_sec > 1000:
 
 **Решение:**
 
-```python
-def search_products(query):
-    cache_key = f"search:{query}"
-    
-    result = redis.get(cache_key)
-    if result is not None:
-        return json.loads(result)
-    
-    # Поиск в БД
-    products = db.search(query)
-    
-    if len(products) == 0:
-        # Кэшируем ПУСТОЙ результат с коротким TTL
-        redis.set(cache_key, "[]", ex=60)  # 60 секунд
-    else:
-        redis.set(cache_key, json.dumps(products), ex=300)
-    
-    return products
+```php
+<?php
+
+use Doctrine\DBAL\Connection;
+use Predis\Client as RedisClient;
+
+final class SearchService
+{
+    public function __construct(
+        private Connection $connection,
+        private RedisClient $redis,
+    ) {}
+
+    public function searchProducts(string $query): array
+    {
+        $cacheKey = sprintf('search:%s', $query);
+
+        $cached = $this->redis->get($cacheKey);
+        if ($cached !== null) {
+            return json_decode($cached, true, flags: JSON_THROW_ON_ERROR);
+        }
+
+        // Поиск в БД
+        $products = $this->connection->fetchAllAssociative(
+            'SELECT * FROM products WHERE name ILIKE :q',
+            ['q' => '%'.$query.'%'],
+        );
+
+        if ($products === []) {
+            // Кэшируем ПУСТОЙ результат с коротким TTL
+            $this->redis->setex($cacheKey, 60, '[]'); // 60 секунд
+        } else {
+            $this->redis->setex($cacheKey, 300, json_encode($products, JSON_THROW_ON_ERROR));
+        }
+
+        return $products;
+    }
+}
 ```
 
 **Важно:** TTL для пустых результатов должен быть короче!
@@ -1838,48 +2265,74 @@ def search_products(query):
 
 **Баг:**
 
-```python
-# ❌ Забыли добавить tenant_id в ключ!
-def get_user_settings(user_id):
-    key = f"settings:{user_id}"  # БАГ!
-    # ...
+```php
+<?php
+
+// ❌ Забыли добавить tenant_id в ключ!
+function getUserSettingsBroken(int $userId, RedisClient $redis): array {
+    $key = sprintf('settings:%d', $userId);  // БАГ!
+    // ...
+}
 ```
 
 **Проблема:** User #123 в tenant A видит данные user #123 из tenant B!
 
 **Фикс:**
 
-```python
-# ✅ Всегда включаем tenant_id
-def get_user_settings(tenant_id, user_id):
-    key = f"settings:{tenant_id}:{user_id}"
-    # ...
+```php
+<?php
+
+// ✅ Всегда включаем tenant_id
+function getUserSettings(string $tenantId, int $userId, RedisClient $redis): array {
+    $key = sprintf('settings:%s:%d', $tenantId, $userId);
+    // ...
+}
 ```
 
 #### Кейс 3: Кэш и права доступа
 
 **Опасность:**
 
-```python
-# Пользователь был admin, закэшировали права
-cache.set(f"acl:{user_id}", {"role": "admin"}, ex=3600)  # 1 час!
+```php
+<?php
 
-# Через 10 минут понизили до user
-db.update("UPDATE users SET role = 'user' WHERE id = ?", user_id)
+// Пользователь был admin, закэшировали права
+$cache->set(sprintf('acl:%d', $userId), ['role' => 'admin'], 3600); // 1 час!
 
-# Но кэш ещё 50 минут будет показывать admin! ❌
+// Через 10 минут понизили до user
+$connection->executeStatement(
+    'UPDATE users SET role = :role WHERE id = :id',
+    ['role' => 'user', 'id' => $userId],
+);
+
+// Но кэш ещё 50 минут будет показывать admin! ❌
 ```
 
 **Решение:**
 
-```python
-# Короткий TTL для прав
-ACL_TTL = 60  # 1 минута
+```php
+<?php
 
-# + Event-based инвалидация при изменении прав
-event_bus.subscribe("user.role_changed", lambda e: {
-    redis.delete(f"acl:{e.user_id}")
-})
+// Короткий TTL для прав
+const ACL_TTL = 60; // 1 минута
+
+// + Event-based инвалидация при изменении прав
+final class UserRoleChangedEvent
+{
+    public function __construct(
+        public readonly int $userId,
+    ) {}
+}
+
+final class AclCacheInvalidationListener
+{
+    public function __construct(private RedisClient $redis) {}
+
+    public function __invoke(UserRoleChangedEvent $event): void
+    {
+        $this->redis->del([sprintf('acl:%d', $event->userId)]);
+    }
+}
 ```
 
 ### 4.6. Чеклист перед продакшеном
