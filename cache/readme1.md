@@ -234,25 +234,31 @@ $this->cache->delete("product:{$productId}"); // ✅
 
 ```mermaid
 sequenceDiagram
-    participant A as Request A<br/>(UPDATE)
-    participant B as Request B<br/>(READ)
+    participant A as Запрос A (UPDATE)
+    participant B as Запрос B (READ)
     participant Cache as Redis
     participant DB as БД
-    
-    Note over DB: price = 900₽
-    
-    A->>DB: UPDATE price=1000
-    Note over DB: price = 1000₽ ✅
-    
+
+    Note over DB: t=0 — price = 900₽
+
+    Note over A,B: t=0 — оба запроса стартуют
+
     B->>Cache: GET product:123
     Cache-->>B: MISS
+
     B->>DB: SELECT price
-    DB-->>B: 1000₽ (новая!)
-    
+    DB-->>B: 900₽ (старое значение)
+
+    A->>DB: UPDATE price = 1000
+    Note over DB: t=2 — БД обновлена ✅<br/>price = 1000₽
+
     A->>Cache: DELETE product:123
-    
+    Note over Cache: t=3 — ключ удалён
+
     B->>Cache: SET product:123 = {price: 900}
-    Note over Cache: ❌ Записали СТАРУЮ цену!<br/>из-за race condition
+    Note over Cache: ❌ Записали СТАРУЮ цену<br/>из-за race condition
+
+
 ```
 
 [//]: # (нужно объяснить стратегии наполнения кеша cache aside/ read through/write through /Write-Behind)
