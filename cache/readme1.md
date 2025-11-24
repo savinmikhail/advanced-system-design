@@ -182,12 +182,79 @@ Q2: Какие данные критичны к coherence?
 
 Q3: Как проверить, что coherence нарушена?
 
-* Метрика stale_read_rate (об этом в разделе D)
+* Метрика stale_read_rate (об этом расскажу в разделе D)
 
 
+### B2. Стратегии наполнения кэша
 
-[//]: # (дать определение       - Что такое coherence)
-B2. Стратегии наполнения кэша
+Так как мы можем бороться с расхождением кеша? Сначала надо определиться кто в системе будет отвечать за это
+
+Есть два разных подхода:
+
+| Подход | Кто управляет | Плюсы | Минусы |
+|--------|---------------|-------|--------|
+| **Сервис-driven** | Код сервиса явно работает с кэшем | Полный контроль | Легко ошибиться |
+| **Cache-driven** | Кэш-слой прозрачно работает с БД | Меньше кода | Меньше гибкости |
+
+В свою очередь из этих подходов рождаются 4 разных стратегии наполнения кеша
+
+#### Стратегия 1: Cache-Aside (Lazy Loading)
+
+При этом подходе всем управляет сервис. То есть мы в коде явно проверяем кэш, читаем из БД, пишем в кэш.
+
+```mermaid
+sequenceDiagram
+    participant Service as Сервис
+    participant Cache as Redis
+    participant DB as PostgreSQL
+    
+    Service->>Cache: GET product:123
+    
+    alt Cache HIT
+        Cache-->>Service: {id: 123, price: 1000}
+        Note over Service: Быстро ✅
+    else Cache MISS
+        Cache-->>Service: null
+        Service->>DB: SELECT * FROM products WHERE id=123
+        DB-->>Service: {id: 123, price: 1000}
+        Service->>Cache: SET product:123, TTL=300
+        Note over Service: Медленнее, но обновили кэш
+    end
+```
+
+Но так легко забыть удалить связанные ключи
+
+```php
+// ❌ Забыли инвалидировать связанные ключи
+$this->cache->delete("product:{$productId}"); // ✅
+// Забыли:
+// $this->cache->delete("cart:user:123"); // адрес был тут
+// $this->cache->delete("search:results"); // товар был тут
+```
+
+```mermaid
+sequenceDiagram
+    participant A as Request A<br/>(UPDATE)
+    participant B as Request B<br/>(READ)
+    participant Cache as Redis
+    participant DB as БД
+    
+    Note over DB: price = 900₽
+    
+    A->>DB: UPDATE price=1000
+    Note over DB: price = 1000₽ ✅
+    
+    B->>Cache: GET product:123
+    Cache-->>B: MISS
+    B->>DB: SELECT price
+    DB-->>B: 1000₽ (новая!)
+    
+    A->>Cache: DELETE product:123
+    
+    B->>Cache: SET product:123 = {price: 900}
+    Note over Cache: ❌ Записали СТАРУЮ цену!<br/>из-за race condition
+```
+
 [//]: # (нужно объяснить стратегии наполнения кеша cache aside/ read through/write through /Write-Behind)
 [//]: # (где какая используется , плюсы минусы)
 B3. Инвалидация и гонки
