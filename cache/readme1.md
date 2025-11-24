@@ -210,22 +210,56 @@ Q3: Как проверить, что coherence нарушена?
 
 ```mermaid
 sequenceDiagram
-    participant Service as Сервис
-    participant Cache as Redis
-    participant DB as PostgreSQL
-    
-    Service->>Cache: GET product:123
-    
-    alt Cache HIT
-        Cache-->>Service: {id: 123, price: 1000}
-        Note over Service: Быстро ✅
-    else Cache MISS
-        Cache-->>Service: null
-        Service->>DB: SELECT * FROM products WHERE id=123
-        DB-->>Service: {id: 123, price: 1000}
-        Service->>Cache: SET product:123, TTL=300
-        Note over Service: Медленнее, но обновили кэш
+  participant Service as Сервис
+  participant Cache as Redis/Cache
+  participant DB as БД
+
+  Note over Service: t=0 — запрос: получить профиль пользователя
+
+  Service->>Cache: GET profile:user:123
+  alt Cache HIT
+    Cache-->>Service: {addr: СПб}
+    Note over Service: Быстро<br/>значение найдено в кэше
+  else Cache MISS
+    Cache-->>Service: null
+    Note over Service: Кэша нет — нужно идти в БД
+
+    Service->>DB: SELECT addr FROM users WHERE id=123
+    DB-->>Service: {addr: СПб}
+
+    Service->>Cache: SET profile:user:123 = СПб<br/>TTL=300
+    Note over Cache: Кэш обновлён вручную кодом сервиса
+
+    Service-->>Service: Возврат данных пользователю
+  end
+
+```
+
+```mermaid
+
+flowchart LR
+    subgraph S["Сервис"]
+        A[Запрос данных<br/>profile:user:123]
+        F[SET в кэш<br/>profile:user:123]
     end
+
+    subgraph C["Кэш (Cache-Aside)"]
+        B{Есть ключ?}
+    end
+
+    subgraph DB["База данных"]
+        D[SELECT FROM users]
+    end
+
+    A --> B
+    B -- HIT --> E[Вернуть значение]
+    B -- MISS --> D
+    D --> F
+    F --> E
+
+    style C fill:#ffe1e1,stroke:#c62828
+    style DB fill:#e6f4ea,stroke:#2e7d32
+
 ```
 Все очень прозрачно
 
@@ -257,6 +291,59 @@ Cache-aside работает, пока у тебя 2 экрана, потом с
 - согласованность между Redis и DB стала стабильнее
 - исчезает часть race conditions - Нет шансов записать в кэш устаревшие данные руками
 
+```mermaid
+sequenceDiagram
+    participant Service as Сервис
+    participant Cache as Redis/Cache Tier
+    participant DB as БД
+
+    Note over Service: t=0 — пользователь открывает корзину<br/>нужен адрес доставки
+
+    Service->>Cache: GET profile:user:123
+    alt Cache HIT
+        Cache-->>Service: {addr: СПб}
+        Note over Service: Быстро<br/>кэш отдаёт свежее значение
+    else Cache MISS
+        Cache-->>Service: null
+        Note over Cache: Кэш ПУСТ<br/>надо обновить данные
+
+        Cache->>DB: SELECT addr FROM users WHERE id=123
+        DB-->>Cache: {addr: СПб}
+
+        Cache->>Cache: SET profile:user:123 = СПб<br/>TTL=300
+        Cache-->>Service: {addr: СПб}
+
+        Note over Cache: Кэш сам сходил в БД<br/>сервис этого не делает вручную
+    end
+
+```
+
+```mermaid
+flowchart LR
+    subgraph S["Сервис"]
+        A[GET profile:user:123]
+    end
+
+    subgraph C["Read-Through Cache"]
+        B{Ключ есть?}
+        C1[Вернуть значение<br/>из кэша]
+        C2[Запросить из БД<br/>и положить в кэш]
+    end
+
+    subgraph DB["База данных"]
+        D[SELECT addr FROM users]
+    end
+
+    A --> B
+    B -- HIT --> C1
+    B -- MISS --> C2
+    C2 --> D
+    D --> C2
+
+    style C fill:#ffefd9,stroke:#d39e00
+    style DB fill:#e6f4ea,stroke:#2e7d32
+
+```
 Но взамен мы получаем новые проблемы:
 Кеш не знает когда запись в базе обновляется, он обновляется только при чтении при cache-miss
 То есть пользователь, который только что обновил адрес, увидит старый значение до следующего cache miss.
@@ -272,6 +359,50 @@ Cache-aside работает, пока у тебя 2 экрана, потом с
 1. Запись идёт в кэш
 2. Кэш синхронно пишет в БД
 3. Только после этого запрос считается успешным
+
+```mermaid
+sequenceDiagram
+    participant Service as Сервис
+    participant Cache as Redis/Cache Tier
+    participant DB as БД
+
+    Note over Service: t=0 — пользователь меняет адрес<br/>"СПб, Невский 25"
+
+    Service->>Cache: SET profile:user:123 = {addr: СПб}
+    Note over Cache: Кэш записывает новое значение<br/>и ОБЯЗАН синхронно обновить БД
+
+    Cache->>DB: UPDATE users SET addr=СПб WHERE id=123
+    DB-->>Cache: OK
+
+    Cache-->>Service: OK
+    Note over Service: t=+X ms — запись подтверждена<br/>данные в кэше и БД синхронны
+
+    Note over Cache,DB: Кэш становится точкой отказа<br/>запись медленнее из-за двойной операции
+
+```
+```mermaid
+flowchart LR
+    subgraph S["Сервис"]
+        A[Write Request<br/>addr=СПб]
+    end
+
+    subgraph C["Кэш"]
+        B[Записать новое значение<br/>profile:user:123=СПб]
+        B2[Синхронно обновить БД]
+    end
+
+    subgraph DB["База данных"]
+        E[UPDATE users<br/>SET addr=СПб]
+    end
+
+    A --> B
+    B --> B2
+    B2 --> E
+
+    style C fill:#ffe1e1,stroke:#c62828
+    style DB fill:#e6f4ea,stroke:#2e7d32
+
+```
 
 Теперь Рабочие данные **всегда** согласованы с бд (источником истины)
 
@@ -294,6 +425,57 @@ Cache-aside работает, пока у тебя 2 экрана, потом с
 1. Запись делается только в кэш
 2. Кэш кладёт операцию в очередь
 3. БД обновляется фоном (через батчи)
+
+```mermaid
+sequenceDiagram
+  participant Service as Сервис
+  participant Cache as Redis/Cache Tier
+  participant Queue as Очередь<br/>(Log/WAL)
+  participant DB as БД
+
+  Note over Service: t=0 — пользователь меняет адрес<br/>"СПб, Невский 25"
+
+  Service->>Cache: SET profile:user:123 = {addr: СПб}<br/>TTL=300
+  Note over Cache: Кэш обновлён мгновенно<br/>Чтение теперь отдаёт новый адрес
+
+  Cache->>Queue: AppendLog({user:123, addr:СПб})
+  Note over Queue: t=1 — операция записана в лог<br/>Гарантия доставки зависит от durability
+
+  Note over DB: t=1–t=N<br/>БД пока хранит старый адрес<br/>"Москва, Ленина 10"
+
+  Queue->>DB: UPDATE users SET addr=СПб<br/>WHERE id=123
+  Note over DB: t=N+1 — БД обновлена<br/>Актуализирована через батч/воркер
+
+  Note over Service,DB: Если воркер умер или лог потерян → риск рассинхрона
+
+```
+```mermaid
+  flowchart LR
+  subgraph S["Сервис"]
+    A["Write Request<br/>addr=СПб"]
+  end
+
+  subgraph C["Кэш"]
+    B["Записать новое значение<br/>profile:user:123=СПб"]
+  end
+
+  subgraph Q["Очередь / WAL"]
+    D["Записать событие<br/>&#123;user:123, addr:СПб&#125;"]
+  end
+
+  subgraph DB["База данных"]
+    E["Позднее обновление<br/>UPDATE..."]
+  end
+
+  A -- SET --> B
+  B -- Append --> D
+  D -- async batch --> E
+
+  style C fill:#ffe1e1,stroke:#c62828
+  style Q fill:#fff3cd,stroke:#d39e00
+  style DB fill:#e6f4ea,stroke:#2e7d32
+
+```
 
 Таким образом запись у нас снова становится быстрой, бд можно наполнять батчами, что дешево к ресурсам
 
