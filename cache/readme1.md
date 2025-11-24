@@ -261,6 +261,31 @@ flowchart LR
     style DB fill:#e6f4ea,stroke:#2e7d32
 
 ```
+
+пример псевдокода
+
+```php
+$cacheKey = "profile:user:$userId";
+
+// 1. Попытка прочитать из кеша
+$cached = $this->cache->get(key: $cacheKey);
+
+if ($cached !== null) {
+    return $cached;
+}
+
+// 2. MISS → читаем из базы
+$profile = $this->db->fetchAssociative(
+    'SELECT id, name, address FROM users WHERE id = ?',
+    [$userId]
+);
+
+// 3. Пишем результат в Redis
+$this->cache->delete(key: $cacheKey);
+$this->cache->set(key: $cacheKey, value: $profile, ttl: 300);
+
+```
+
 Все очень прозрачно
 
 Но возникает ряд проблем:
@@ -344,6 +369,17 @@ flowchart LR
     style DB fill:#e6f4ea,stroke:#2e7d32
 
 ```
+
+Это не магическая возможность редиса а скорее паттерн в коде обертке над кешом:
+```php
+$value = $cache->get('user:123', function(ItemInterface $item) use($db): array {
+    $item->expiresAfter(300);
+
+    return $db->query('SELECT * FROM users WHERE id = 123');
+});
+
+```
+
 Но взамен мы получаем новые проблемы:
 Кеш не знает когда запись в базе обновляется, он обновляется только при чтении при cache-miss
 То есть пользователь, который только что обновил адрес, увидит старый значение до следующего cache miss.
@@ -402,6 +438,20 @@ flowchart LR
     style C fill:#ffe1e1,stroke:#c62828
     style DB fill:#e6f4ea,stroke:#2e7d32
 
+```
+пример кода
+
+```php
+ $cacheKey = "profile:user:$userId";
+
+// 1. Пишем в кэш новое значение
+$this->cache->get($cacheKey, function (ItemInterface $item) use ($data) {
+    $item->expiresAfter(300);
+    return $data;
+});
+
+// 2. Синхронно пишем в БД
+$this->db->update('users', $data, ['id' => $userId]);
 ```
 
 Теперь Рабочие данные **всегда** согласованы с бд (источником истины)
@@ -477,10 +527,28 @@ sequenceDiagram
 
 ```
 
+Пример кода
+
+```php
+$cacheKey = "profile:user:$userId";
+
+// 1. Пишем в кэш НЕМЕДЛЕННО
+$this->cache->get($cacheKey, function (ItemInterface $item) use ($data) {
+    $item->expiresAfter(300);
+    return $data;
+});
+
+// 2. Отправляем событие в очередь для асинхронного обновления БД
+$this->bus->dispatch(new UpdateUserProfileMessage($userId, $data));
+```
+
 Таким образом запись у нас снова становится быстрой, бд можно наполнять батчами, что дешево к ресурсам
 
-Из минусов - происходит неконсистентность в обратную сторону - в кеше данные свежее чем в базе. Но это менее страшно для пользователя, так как данные он получает из кеша
-Так же возникает риск потерять данные, если упадет очередь, что в целом решаемо через durable queue или  Kafka.
+Из минусов - 
+- То есть write-behind — это сознательный уход от сильной консистентности  в пользу latency & throughput, так как инструменты сохранения consistency из ACID у нас исчезают. пользователь видит что все ок, хотя в базу никогда не ляжет запись
+  то есть можем использовать либо в event sourcing/eventual consistency вроде saga, либо для данных которые допустимо терять: аналитика, логи и тп
+- происходит неконсистентность в обратную сторону - в кеше данные свежее чем в базе. Но это менее страшно для пользователя, так как данные он получает из кеша
+- Так же возникает риск потерять данные, если упадет очередь, что в целом решаемо через durable queue или  Kafka.
 
 Итого:
 
