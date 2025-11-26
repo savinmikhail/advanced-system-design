@@ -1,5 +1,5 @@
 ```php
- $cacheKey = "profile:user:$userId";
+$cacheKey = "profile:user:$userId";
 
 // 1. Пишем в кэш новое значение
 $this->cache->get($cacheKey, function (ItemInterface $item) use ($data) {
