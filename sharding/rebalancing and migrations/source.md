@@ -1,34 +1,25 @@
-# 📚 Материалы для подготовки (крутые источники)
 
-### Papers
 
-✔ DynamoDB Adaptive Partitioning
-✔ Google Spanner Paper
-✔ Yahoo PNUTS
-✔ Bigtable Paper
-✔ Facebook TAO
-✔ Cassandra: System Architecture
-✔ Elastic Distributed Search internals
-✔ MongoDB Sharding Internals
+# 📚 МАТЕРИАЛЫ ИСТОЧНИКОВ (золотые)
 
-### Talks
+## **Обязательно почитать:**
 
-✔ Uber: “Schemaless Sharding at Scale”
-✔ Pinterest: “Sharded Graph Architecture”
-✔ Instagram Feed Ranking & Sharded Storage
-✔ Twitter Manhattan architecture
+### ✔ Uber — “Building Uber’s Large-Scale Real-Time Analytics Database”
 
-### Engineering Blogs
+[https://www.uber.com/blog/real-time-analytics-db/](https://www.uber.com/blog/real-time-analytics-db/)
 
-✔ Uber Engineering Blog
-✔ Meta Engineering (TAO, Sharding, Feed)
-✔ Pinterest Engineering
-✔ Twitter Engineering
-✔ Google Cloud Spanner team blog
-✔ Elasticsearch “Search Phase” deep-dives
+### ✔ Uber — “uShard: Scaling Sharded Storage with Online Rebalancing”
 
-### Books
+[https://www.usenix.org/conference/osdi22/presentation/lee](https://www.usenix.org/conference/osdi22/presentation/lee)
 
-✔ Designing Data-Intensive Applications (Kleppmann)
-✔ Database Internals (Petrov)
-✔ High-Performance MySQL (O’Reilly)
+### ✔ TikTok — Dynamic Sharding & Hotspot mitigation
+
+(очень годно, если найдёшь PDF)
+
+### ✔ Facebook (Meta) — Online Migrations
+
+[https://engineering.fb.com/2016/03/07/core-data/online-schema-changes/](https://engineering.fb.com/2016/03/07/core-data/online-schema-changes/)
+
+### ✔ Google Spanner — migrations & backups
+
+(глубоко объяснён atomic switch-over)
