@@ -19,9 +19,10 @@
    c. (опционально маленький мостик к SLO/SLA, но без полного trade-offs)
 
 3. **Часть 2: Продвинутое шардирование и партиционирование**
-   a. Dynamic Sharding стратегии
-   b. Cross-shard операции и оптимизации
-   c. Rebalancing и Migration без downtime
+   a. Базовый ликбез: что такое шардирование / партиционирование
+   b. Dynamic Sharding стратегии
+   c. Cross-shard операции и оптимизации
+   d. Rebalancing и Migration без downtime
 
 4. **Часть 3: Распределённые транзакции и консистентность данных**
    a. Distributed Transactions: от 2PC до Saga

@@ -358,19 +358,6 @@ $billing->withdraw($userId, $amount);
 
 ---
 
-# 📚 БЛОК 12. Материалы для углубления (список)
-
-Прям must-read:
-
-* “Life Beyond Distributed Transactions” — Pat Helland
-* “Sagas” — 1987 (!) Hector Garcia-Molina
-* Kleppmann — DDIA
-* Netflix Conductor docs
-* Temporal: “Retry Semantics”
-* Uber Payments architecture
-
----
-
 # 🏁 ФИНАЛ
 
 Distributed transactions — это не про ACID.
@@ -393,5 +380,3 @@ Distributed transactions — это не про ACID.
 * Outbox + CDC
 * Idempotent operations
 * Temporal-like workflow engines
-
-На этом блок можно завершать.

@@ -1,4 +1,3 @@
-
 ### Статьи и доклады
 
 * Pat Helland — “Life Beyond Distributed Transactions”
