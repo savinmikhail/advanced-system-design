@@ -1,4 +1,4 @@
-# Rebalancing и миграции без downtime — сценарий
+# Блок 2.13. Rebalancing и миграции без downtime
 
 ## 1. Зачем нужен rebalancing (1 минута)
 
