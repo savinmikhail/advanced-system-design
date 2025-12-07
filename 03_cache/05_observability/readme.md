@@ -1,4 +1,4 @@
-## E. Observability и Production Readiness (новый раздел!) (нужно доработать)
+## Блок 4.6. Observability и Production Readiness
 
 объяснить что надо покрывать метриками и следить за метриками а не на глаз выбирать че кешируем че нет
 
