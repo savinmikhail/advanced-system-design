@@ -75,12 +75,7 @@ product:123:version = 7
 
 Тогда обновлять значение будем вот так
 
-```php
-$version = $redis->incr("product:123:version"); // атомарно → 8
-$key = "product:123:v$version";
-
-$redis->set($key, json_encode($data));
-```
+![Пример записи версии в кэш на PHP](assets/01-php-versioned-cache-write.png)
 
 INCR здесь гарантирует со стороны редиса, что два параллельных запроса никогда не получат одну и ту же версию
 

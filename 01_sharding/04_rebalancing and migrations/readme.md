@@ -141,17 +141,7 @@
 
 Примерная схема:
 
-```mermaid
-flowchart LR
-    App --> Router
-    Router --> OldShard
-    Router --> NewShard
-
-    OldShard -- CDC/changes --> Migrator
-    Migrator --> NewShard
-
-    Router -. switch .-> NewShard
-```
+![Схема миграции между шарадами](assets/01-migration-flow.png)
 
 Дальше всё, что мы будем обсуждать — вариации на тему этих трёх шагов.
 

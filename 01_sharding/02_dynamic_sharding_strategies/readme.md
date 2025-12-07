@@ -342,12 +342,7 @@ ___
 
 Простейший, “учебный” вариант:
 
-```text
-0–1M userId   → shard1
-1M–2M userId  → shard2
-2M–3M userId  → shard3
-...
-````
+![Учебный пример range-шардирования по userId](assets/01-shard-range-map-example.png)
 
 Это уже directory-подход:
 у тебя есть явная карта “диапазон → шард”.
@@ -382,12 +377,7 @@ ___
 
 2. В shard-map храним **bucket → физический шард**:
 
-   ```text
-   bucket 0–127     → shard1
-   bucket 128–511   → shard2
-   bucket 512–1023  → shard3
-   ...
-   ```
+   ![Маппинг бакетов на шарды](assets/02-bucket-to-shard-map.png)
 
 3. При росте/ребалансинге:
 
@@ -522,16 +512,7 @@ Core идея:
 
 Схематично:
 
-```text
-обычный путь:
-  key → (hash / range) → shard
-
-с hot-key isolation:
-  if key in HOT_MAP:
-      → hot_shard_for(key)
-  else:
-      → (hash / range) → shard
-```
+![Схема hot-key isolation](assets/03-hot-key-routing.png)
 
 Пример:
 

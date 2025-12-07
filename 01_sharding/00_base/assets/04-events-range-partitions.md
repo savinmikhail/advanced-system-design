@@ -1,0 +1,10 @@
+```sql
+CREATE TABLE events_2025_12
+    PARTITION OF events
+    FOR VALUES FROM ('2025-12-01') TO ('2026-01-01');
+
+CREATE TABLE events_2026_01
+    PARTITION OF events
+    FOR VALUES FROM ('2026-01-01') TO ('2026-02-01');
+```
+

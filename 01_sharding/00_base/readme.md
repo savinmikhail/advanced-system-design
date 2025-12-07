@@ -64,22 +64,7 @@
 
 Пример “до”:
 
-```text
-users
-──────────────────────────────────────────────────────────────────────
-id (bigint, PK)
-email (text, unique)
-password_hash (text)
-state (smallint)
-middle_name (text)
-google_id (text)
-github_id (text)
-vk_id (text)
-avatar_url (text)
-bio (text)
-settings_json (jsonb)
-... ещё пачка флагов/полей
-```
+![Таблица users до вертикального разрезания](assets/01-users-table-before.png)
 
 90% запросов по факту делают:
 
@@ -93,25 +78,7 @@ WHERE email = ?;
 
 Vertical partitioning в таком случае — осознанный шаг:
 
-```text
-users_core
-────────────────────────────────────────
-id (bigint, PK)
-email (text, unique)
-password_hash (text)
-state (smallint)
-google_id (text)
-github_id (text)
-vk_id (text)
-
-users_profile
-────────────────────────────────────────
-user_id (bigint, PK, FK → users_core.id)
-avatar_url (text)
-bio (text)
-settings_json (jsonb)
-... всё “редкое и жирное”
-```
+![Разделение users на users_core и users_profile](assets/02-users-core-profile.png)
 
 Дальше:
 
@@ -162,26 +129,11 @@ settings_json (jsonb)
 
 Например, в Postgres:
 
-```sql
-CREATE TABLE events (
-    id         bigserial PRIMARY KEY,
-    user_id    bigint      NOT NULL,
-    created_at timestamptz NOT NULL,
-    payload    jsonb       NOT NULL
-) PARTITION BY RANGE (created_at);
-```
+![Таблица events с RANGE-партиционированием](assets/03-events-range-partition-table.png)
 
 Создадим две партиции:
 
-```sql
-CREATE TABLE events_2025_12
-    PARTITION OF events
-    FOR VALUES FROM ('2025-12-01') TO ('2026-01-01');
-
-CREATE TABLE events_2026_01
-    PARTITION OF events
-    FOR VALUES FROM ('2026-01-01') TO ('2026-02-01');
-```
+![Партиции events_2025_12 и events_2026_01](assets/04-events-range-partitions.png)
 
 Для приложения это всё ещё **одна таблица** `events`:
 
@@ -249,29 +201,12 @@ Postgres сам решает:
     * `/mnt/hdd_slow` — медленный и дешёвый HDD под архив.
 
   2. Создаём TABLESPACE’ы:
-
-     ```sql
-     CREATE TABLESPACE fast_ssd LOCATION '/mnt/ssd_fast';
-     CREATE TABLESPACE slow_hdd LOCATION '/mnt/hdd_slow';
-     ```
+  
+     ![Создание TABLESPACE fast_ssd и slow_hdd](assets/05-events-tablespace.png)
 
   3. Кладём разные партиции/индексы в разные таблспейсы:
-
-     ```sql
-     -- свежие события на SSD
-     CREATE TABLE events_2026_01
-       PARTITION OF events
-       FOR VALUES FROM ('2026-01-01') TO ('2026-02-01')
-       TABLESPACE fast_ssd;
-
-     -- архивная партиция на дешёвом диске
-     ALTER TABLE events_2024_01 SET TABLESPACE slow_hdd;
-
-     -- индекс по горячей партиции тоже можно унести на SSD
-     CREATE INDEX idx_events_2026_01_created_at
-       ON events_2026_01 (created_at)
-       TABLESPACE fast_ssd;
-     ```
+  
+     ![Пример раскладки партиций и индексов по TABLESPACE](assets/05-events-tablespace.png)
 
   В managed-Postgres (RDS/Cloud SQL) так часто нельзя сделать напрямую,  
   но на “своём” железе/VM эта схема очень реально живёт в проде.
@@ -313,21 +248,7 @@ Postgres сам решает:
 
 В Postgres:
 
-```sql
-CREATE TABLE users (
-    id    bigint PRIMARY KEY,
-    email text NOT NULL
-) PARTITION BY HASH (id);
-
-CREATE TABLE users_p0
-    PARTITION OF users
-    FOR VALUES WITH (MODULUS 4, REMAINDER 0);
-
-CREATE TABLE users_p1
-    PARTITION OF users
-    FOR VALUES WITH (MODULUS 4, REMAINDER 1);
--- и так далее
-```
+![Пример HASH-партиционирования users](assets/06-users-hash-partition.png)
 
 Под капотом — тот же самый `user_id % N`, который потом встретится в Dynamic Sharding.
 
@@ -364,17 +285,8 @@ CREATE TABLE users_p1
 Примеры:
 
 * Партиционируем по `created_at` и хотим PK:
-
-  ```sql
-  CREATE TABLE events (
-    id         bigint NOT NULL,
-    created_at timestamptz NOT NULL,
-    ...
-  ) PARTITION BY RANGE (created_at);
-
-  ALTER TABLE events
-    ADD CONSTRAINT events_pkey PRIMARY KEY (id, created_at);
-  ```
+  
+  ![PK на партиционированной таблице events](assets/07-events-partitioned-pk.png)
 
   Так можно: PK включает `created_at`.
   Но глобальной уникальности голого `id` уже **нет** — уникальна только пара `(id, created_at)`.
@@ -382,16 +294,8 @@ CREATE TABLE users_p1
 * попробуем `UNIQUE(id)` при партиционировании по `created_at` — Postgres не даст.
 
 * Если партиционируем по `id` (HASH PARTITION BY id):
-
-  ```sql
-  CREATE TABLE users (
-    id bigint NOT NULL,
-    ...
-  ) PARTITION BY HASH (id);
-
-  ALTER TABLE users
-    ADD CONSTRAINT users_pkey PRIMARY KEY (id);
-  ```
+  
+  ![PK на HASH-партиционированной таблице users](assets/08-users-partitioned-pk.png)
 
   Так можно: partition key = `id`, каждый `id` живёт ровно в одной партиции.
 
@@ -488,19 +392,7 @@ CREATE TABLE users_p1
 
 Простейший “на коленке” routing-код:
 
-```php
-function getUserShardConnection(int $userId): PDO
-{
-    $shard = $userId % 4;
-
-    return match ($shard) {
-        0 => $this->connShard0,
-        1 => $this->connShard1,
-        2 => $this->connShard2,
-        3 => $this->connShard3,
-    };
-}
-```
+![Простейший routing по userId](assets/09-php-user-shard-routing.png)
 
 Это уже шардирование:
 
@@ -522,26 +414,11 @@ function getUserShardConnection(int $userId): PDO
 
 Наивный вариант — захардкодить mapping в коде:
 
-```php
-function getClusterForRegion(string $region): string
-{
-    return match ($region) {
-        'EU'   => 'pg-eu-cluster',
-        'US'   => 'pg-us-cluster',
-        'APAC' => 'pg-apac-cluster',
-    };
-}
-```
+![Routing по региону](assets/10-php-region-shard-routing.png)
 
 Более взрослый вариант: **таблица-шардмапа**:
 
-```sql
-CREATE TABLE shard_map (
-    region      text PRIMARY KEY,
-    dsn         text NOT NULL,
-    is_readonly boolean NOT NULL DEFAULT false
-);
-```
+![Таблица shard_map](assets/11-sql-shard-map.png)
 
 Теперь приложение:
 

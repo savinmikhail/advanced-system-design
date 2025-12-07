@@ -87,21 +87,7 @@
 
 Схема:
 
-```mermaid
-sequenceDiagram
-    participant C as Coordinator
-    participant A as Service A
-    participant B as Service B
-
-    C->>A: PREPARE?
-    A-->>C: OK
-    
-    C->>B: PREPARE?
-    B-->>C: OK
-    
-    C->>A: COMMIT
-    C->>B: COMMIT
-```
+![Последовательность 2PC](assets/01-2pc-sequence.png)
 
 На бумаге выглядит аккуратно. Теперь смотрим на реальность.
 
@@ -194,24 +180,7 @@ sequenceDiagram
 
 Схема:
 
-```mermaid
-sequenceDiagram
-    participant O as Orchestrator
-    participant B as Billing
-    participant I as Inventory
-    participant R as Orders
-
-    O->>B: Списать деньги
-    B-->>O: OK
-    
-    O->>I: Забронировать товар
-    I-->>O: FAIL
-    
-    O->>B: Компенсация: вернуть деньги
-    B-->>O: OK
-    
-    O-->>O: Saga FAILED
-```
+![Сага с фейлом и компенсацией](assets/02-saga-failed-sequence.png)
 
 Важный момент: мы **сознательно отказываемся от строгой атомарности**.
 Здесь возможны промежуточные состояния:
@@ -294,12 +263,7 @@ sequenceDiagram
 
 Каждый сервис реагирует на события других:
 
-```mermaid
-graph LR
-Billing -->|event: MoneyWithdrawn| Inventory
-Inventory -->|event: GoodsReserved| Orders
-Orders -->|event: OrderCreated| Notifications
-```
+![Хореография с обменом событиями](assets/03-saga-choreography.png)
 
 Картина:
 
@@ -324,14 +288,7 @@ Orders -->|event: OrderCreated| Notifications
 
 Другой вариант — завести отдельный компонент, который **явно управляет** шагами.
 
-```mermaid
-graph TD
-O(Saga Orchestrator)
-O --> Billing
-O --> Inventory
-O --> Orders
-O --> Notifications
-```
+![Saga Orchestrator](assets/04-saga-orchestrator.png)
 
 Он знает:
 
@@ -412,12 +369,7 @@ O --> Notifications
 
 Схема:
 
-```mermaid
-graph LR
-A[Сервис] -->|TX: INSERT/UPDATE| B[(БД)]
-B --> C[Outbox]
-C -->|CDC| D[Kafka]
-```
+![Паттерн Transactional Outbox](assets/05-outbox-flow.png)
 
 Важные эффекты:
 
@@ -471,14 +423,7 @@ C -->|CDC| D[Kafka]
 
 Псевдо-код:
 
-```php
-if ($repo->hasProcessed($operationId)) {
-    return; // уже всё сделали, повтор просто проходит мимо
-}
-
-$repo->markProcessed($operationId);
-$billing->withdraw($userId, $amount);
-```
+![Идемпотентная операция списания](assets/06-idempotency-php.png)
 
 То же самое относится к компенсирующим шагам — их тоже могут вызвать повторно.
 
