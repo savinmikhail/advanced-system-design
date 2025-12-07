@@ -1,6 +1,6 @@
 # Продвинутый system design
 
-![img.png](weeks_of_coding_save_hours_of_designing.png)
+![Обложка продвинутого system design](weeks_of_coding_save_hours_of_designing.png)
 
 Привет! Мы начинаем продвинутую часть курса по системному дизайну.
 

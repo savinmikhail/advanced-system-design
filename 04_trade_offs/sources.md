@@ -1,6 +1,6 @@
 По мере приближения к максимальной пропускной способности средний размер очереди (и, следовательно, среднее время ожидания) стремится к бесконечности.
 https://blog.danslimmon.com/2016/08/26/the-most-important-thing-to-understand-about-queues/
-![knee curve ](img.png)
+![График knee curve: загрузка vs время ожидания](img.png)
 https://www.bigbinary.com/blog/understanding-queueing-theory
 
 The First Law of Software Architecture, as stated by Mark Richards, is:
