@@ -8,7 +8,8 @@ from docx import Document
 from docx.shared import Inches
 
 
-IMG_PATTERN = re.compile(r"!\\[(.*?)\\]\\(([^)]+)\\)")
+# Full-line markdown image: ![alt](path)
+IMG_PATTERN = re.compile(r"!\[(.*?)\]\(([^)]+)\)")
 
 
 def md_to_docx(md_path: str, docx_path: str | None = None) -> Path:
@@ -72,4 +73,3 @@ def main(argv: list[str]) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv))
-
