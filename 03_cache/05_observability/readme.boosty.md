@@ -1,4 +1,4 @@
-## Блок 4.6. Observability и Production Readiness
+## Блок 4.6. Observability и Production Readiness (boosty)
 
 объяснить что надо покрывать метриками и следить за метриками а не на глаз выбирать че кешируем че нет
 
