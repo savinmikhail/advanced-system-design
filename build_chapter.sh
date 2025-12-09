@@ -76,10 +76,8 @@ img_re = re.compile(r"!\[(.*?)\]\(([^)]+)\)")
 out_path = root / 'chapter3_full.md'
 with out_path.open('w', encoding='utf-8') as out:
     for idx, path in enumerate(files):
-        rel_path = path.relative_to(root).as_posix()
         if idx > 0:
             out.write("\n\n---\n\n")
-        out.write(f"<!-- {rel_path} -->\n\n")
 
         text = path.read_text(encoding='utf-8')
         for line in text.splitlines():
