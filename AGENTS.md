@@ -18,8 +18,8 @@
    2.1. Ликбез: партиционирование vs шардирование
    2.2. Основы шардирования: shard key, hot keys, skew, routing
    2.3. Dynamic Sharding стратегии
-   2.4. Cross-shard операции и оптимизации
-   2.5. Rebalancing и миграции без downtime
+   2.4. Rebalancing и миграции без downtime
+   2.5. Cross-shard операции и оптимизации
 
 4. **Часть 3: Распределённые транзакции и консистентность данных**
    a. Distributed Transactions: от 2PC до Saga
