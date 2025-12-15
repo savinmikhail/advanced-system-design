@@ -11,6 +11,9 @@ from docx.shared import Inches
 # Full-line markdown image: ![alt](path)
 IMG_PATTERN = re.compile(r"!\[(.*?)\]\(([^)]+)\)")
 
+# Markdown ATX heading: #, ##, ..., ###### at start of line
+HEADING_PATTERN = re.compile(r"^(#{1,6})\s+(.+)$")
+
 
 def md_to_docx(md_path: str, docx_path: str | None = None) -> Path:
     """
@@ -35,10 +38,19 @@ def md_to_docx(md_path: str, docx_path: str | None = None) -> Path:
 
     for line in lines:
         stripped = line.strip()
-        match = IMG_PATTERN.fullmatch(stripped)
 
-        if match:
-            alt, rel_path = match.groups()
+        # Headings: "# Title" -> Word "Heading 1", etc.
+        heading_match = HEADING_PATTERN.match(stripped)
+        if heading_match:
+            hashes, title = heading_match.groups()
+            level = min(len(hashes), 4)  # map 1–4, 5/6 тоже в Heading 4
+            style = f"Heading {level}"
+            doc.add_paragraph(title.strip(), style=style)
+            continue
+
+        img_match = IMG_PATTERN.fullmatch(stripped)
+        if img_match:
+            alt, rel_path = img_match.groups()
             img_path = (assets_root / rel_path).resolve()
 
             if img_path.exists():
