@@ -14,6 +14,7 @@ ORDER_DIRS = [
   Path('02_distributed-transactions'),
   Path('03_cache'),
   Path('04_trade_offs'),
+  Path('05_outro'),
 ]
 
 def count_words(path: Path) -> int:
