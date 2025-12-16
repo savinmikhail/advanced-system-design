@@ -31,9 +31,12 @@ python3 estimate_times.py
     - базовые термины
     - Tail Latency оптимизация
     - Throughput Scaling законы (Little, Amdahl, Gustafson, USL)
+    - Балансировка и Scale Cube
+    - Observability
 
 - Часть 2: Продвинутое шардирование и партиционирование
-    - Ликбез: партиционирование vs шардирование
+    - Ликбез: партиционирование vs шардирование vs репликация
+    - Выбор базы под нагрузку и их различия в масштабируемости
     - Основы шардирования: shard key, hot keys, skew, routing
     - Dynamic Sharding стратегии
     - Rebalancing и миграции без downtime
@@ -52,7 +55,11 @@ python3 estimate_times.py
     - уязвимости кеша (optional)
     - observability (optional)
 
-- Часть 5: Resource Optimization trade-offs (эпилог)
+- Часть 5: Resource Optimization trade-offs
+  - trade-offs
+  - resource math
+
+- Заключение
 
 
 ## Глобальная структура курса
