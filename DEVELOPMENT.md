@@ -32,7 +32,7 @@ python3 estimate_times.py
     - Tail Latency оптимизация
     - Throughput Scaling законы (Little, Amdahl, Gustafson, USL)
     - Балансировка и Scale Cube
-    - Observability
+    - Observability для перформанса (метрики, трейсы, логи, OTel)
 
 - Часть 2: Продвинутое шардирование и партиционирование
     - Ликбез: партиционирование vs шардирование vs репликация
@@ -56,8 +56,9 @@ python3 estimate_times.py
     - observability (optional)
 
 - Часть 5: Resource Optimization trade-offs
-  - trade-offs
-  - resource math
+  - Trade-offs: latency vs cost vs сложность, изоляция vs utilization
+  - Resource math: прикидка размеров данных, RPS, CPU/IO, пример расчёта железа и денег
+  - ADR: как фиксировать архитектурные решения и trade-offs
 
 - Заключение
 
