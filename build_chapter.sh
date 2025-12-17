@@ -10,6 +10,7 @@ BLOCK_DIRS=(
   "02_distributed-transactions"
   "03_cache"
   "04_trade_offs"
+  "05_outro"
 )
 
 echo "==> 1. Собираем full-ридми по блокам"
@@ -29,11 +30,8 @@ for dir in "${BLOCK_DIRS[@]}"; do
     | while IFS= read -r -d '' f; do
         rel="${f#${ROOT_DIR}/}"
         {
-          echo "<!-- ${rel} -->"
           echo
           cat "${f}"
-          echo
-          echo '---'
           echo
         } >> "${OUT_FILE}"
       done
