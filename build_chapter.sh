@@ -68,6 +68,7 @@ order_dirs = [
 ]
 
 img_re = re.compile(r"!\[(.*?)\]\(([^)]+)\)")
+heading_re = re.compile(r"^(#{1,6})\s+(.+)$")
 
 
 def collect_files(readme_name: str, root_readme_name: str) -> list[Path]:
@@ -87,37 +88,76 @@ def collect_files(readme_name: str, root_readme_name: str) -> list[Path]:
     return files
 
 
-def write_chapter(files: list[Path], out_path: Path) -> None:
-    with out_path.open('w', encoding='utf-8') as out:
-        for idx, path in enumerate(files):
-            if idx > 0:
-                out.write("\n\n---\n\n")
+def slugify(title: str, counters: dict[str, int]) -> str:
+    # GitHub‑подобный якорь: в нижнем регистре, пробелы -> '-', без лишней пунктуации
+    base = title.strip().lower()
+    base = re.sub(r"[^\w\s-]", "", base)
+    base = re.sub(r"\s+", "-", base)
+    base = re.sub(r"-+", "-", base)
 
-            text = path.read_text(encoding='utf-8')
-            for line in text.splitlines():
-                stripped = line.strip()
-                m = img_re.fullmatch(stripped)
-                if m:
-                    alt, rel_img = m.groups()
-                    # Пересчитываем путь картинки относительно корня репо
-                    if rel_img.startswith('/'):
-                        new_path = rel_img.lstrip('/')
-                    else:
-                        new_path = (path.parent / rel_img).resolve().relative_to(root).as_posix()
-                    out.write(f"![{alt}]({new_path})\n")
+    count = counters.get(base, 0)
+    if count:
+        slug = f"{base}-{count}"
+    else:
+        slug = base
+    counters[base] = count + 1
+    return slug
+
+
+def write_chapter(files: list[Path], out_path: Path) -> None:
+    toc_entries: list[tuple[int, str, str]] = []
+    body_chunks: list[str] = []
+    anchor_counters: dict[str, int] = {}
+
+    for idx, path in enumerate(files):
+        if idx > 0:
+            body_chunks.append("\n\n---\n\n")
+
+        text = path.read_text(encoding="utf-8")
+        for line in text.splitlines():
+            stripped = line.strip()
+
+            # Собираем заголовки для оглавления
+            h = heading_re.match(stripped)
+            if h:
+                hashes, title = h.groups()
+                level = len(hashes)
+                anchor = slugify(title, anchor_counters)
+                toc_entries.append((level, title.strip(), anchor))
+
+            m = img_re.fullmatch(stripped)
+            if m:
+                alt, rel_img = m.groups()
+                # Пересчитываем путь картинки относительно корня репо
+                if rel_img.startswith("/"):
+                    new_path = rel_img.lstrip("/")
                 else:
-                    out.write(line + "\n")
+                    new_path = (path.parent / rel_img).resolve().relative_to(root).as_posix()
+                body_chunks.append(f"![{alt}]({new_path})\n")
+            else:
+                body_chunks.append(line + "\n")
+
+    with out_path.open("w", encoding="utf-8") as out:
+        if toc_entries:
+            out.write("## Оглавление\n\n")
+            for level, title, anchor in toc_entries:
+                indent = "  " * (level - 1)
+                out.write(f"{indent}- [{title}](#{anchor})\n")
+            out.write("\n---\n\n")
+
+        for chunk in body_chunks:
+            out.write(chunk)
 
 
 # Бесплатная версия (только readme.md)
-free_files = collect_files('readme.md', 'README.md')
-free_out = root / 'chapter3_free.md'
+free_files = collect_files("readme.md", "README.md")
+free_out = root / "chapter3_free.md"
 write_chapter(free_files, free_out)
 print(f"written {free_out}")
 
 # Платная версия (только readme.boosty.md)
-boosty_files = collect_files('readme.boosty.md', 'README.boosty.md')
-boosty_out = root / 'chapter3_boosty.md'
+boosty_files = collect_files("readme.boosty.md", "README.boosty.md")
+boosty_out = root / "chapter3_boosty.md"
 write_chapter(boosty_files, boosty_out)
 print(f"written {boosty_out}")
 PY
