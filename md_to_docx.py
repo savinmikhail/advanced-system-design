@@ -6,6 +6,8 @@ from pathlib import Path
 
 from docx import Document
 from docx.shared import Inches
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 
 
 # Full-line markdown image: ![alt](path)
@@ -16,6 +18,26 @@ HEADING_PATTERN = re.compile(r"^(#{1,6})\s+(.+)$")
 
 # TOC item inside "Оглавление" section: "- [Title](#anchor)"
 TOC_ITEM_PATTERN = re.compile(r"^(\s*)[-*]\s+\[(.+?)\]\([^)]+\)\s*$")
+
+
+def _add_word_toc(doc: Document) -> None:
+    """
+    Insert a Word auto-generated TOC field that uses Heading 1–4.
+    Пользователю нужно будет обновить поля в Word (F9 / Update field).
+    """
+    paragraph = doc.add_paragraph()
+    # TOC over Heading levels 1–4, with hyperlinks etc.
+    instr = r'TOC \o "1-4" \h \z \u'
+
+    fld_simple = OxmlElement("w:fldSimple")
+    fld_simple.set(qn("w:instr"), instr)
+    paragraph._p.append(fld_simple)
+
+    r = OxmlElement("w:r")
+    t = OxmlElement("w:t")
+    t.text = "Оглавление (обновите поля в Word)"
+    r.append(t)
+    fld_simple.append(r)
 
 
 def md_to_docx(md_path: str, docx_path: str | None = None) -> Path:
@@ -51,8 +73,11 @@ def md_to_docx(md_path: str, docx_path: str | None = None) -> Path:
             level = min(len(hashes), 4)  # map 1–4, 5/6 тоже в Heading 4
             style = f"Heading {level}"
             doc.add_paragraph(title.strip(), style=style)
-            # Считаем, что после "Оглавление" идут специальные строки оглавления
-            in_toc = title.strip().lower() == "оглавление"
+            # Считаем, что после "Оглавление" идут специальные строки оглавления.
+            # Вместо ручного списка в DOCX вставляем авто-оглавление Word.
+            if title.strip().lower() == "оглавление":
+                in_toc = True
+                _add_word_toc(doc)
             continue
 
         # Конец секции оглавления после разделителя '---'
@@ -63,12 +88,8 @@ def md_to_docx(md_path: str, docx_path: str | None = None) -> Path:
         # Строки вида "- [Блок ...](#anchor)" внутри оглавления
         toc_match = TOC_ITEM_PATTERN.match(line)
         if in_toc and toc_match:
-            indent_spaces, toc_title = toc_match.groups()
-            # Небольшой отступ по количеству уровней
-            indent_level = max(len(indent_spaces) // 2, 0)
-            p = doc.add_paragraph(toc_title.strip())
-            if indent_level:
-                p.paragraph_format.left_indent = Inches(0.25 * indent_level)
+            # В DOCX не дублируем ручное маркдаун-оглавление —
+            # здесь оно заменяется авто-TOC Word.
             continue
 
         img_match = IMG_PATTERN.fullmatch(stripped)
