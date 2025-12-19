@@ -14,6 +14,9 @@ IMG_PATTERN = re.compile(r"!\[(.*?)\]\(([^)]+)\)")
 # Markdown ATX heading: #, ##, ..., ###### at start of line
 HEADING_PATTERN = re.compile(r"^(#{1,6})\s+(.+)$")
 
+# TOC item inside "Оглавление" section: "- [Title](#anchor)"
+TOC_ITEM_PATTERN = re.compile(r"^(\s*)[-*]\s+\[(.+?)\]\([^)]+\)\s*$")
+
 
 def md_to_docx(md_path: str, docx_path: str | None = None) -> Path:
     """
@@ -36,6 +39,8 @@ def md_to_docx(md_path: str, docx_path: str | None = None) -> Path:
     doc = Document()
     assets_root = md_path_obj.parent
 
+    in_toc = False
+
     for line in lines:
         stripped = line.strip()
 
@@ -46,6 +51,24 @@ def md_to_docx(md_path: str, docx_path: str | None = None) -> Path:
             level = min(len(hashes), 4)  # map 1–4, 5/6 тоже в Heading 4
             style = f"Heading {level}"
             doc.add_paragraph(title.strip(), style=style)
+            # Считаем, что после "Оглавление" идут специальные строки оглавления
+            in_toc = title.strip().lower() == "оглавление"
+            continue
+
+        # Конец секции оглавления после разделителя '---'
+        if in_toc and stripped == "---":
+            in_toc = False
+            continue
+
+        # Строки вида "- [Блок ...](#anchor)" внутри оглавления
+        toc_match = TOC_ITEM_PATTERN.match(line)
+        if in_toc and toc_match:
+            indent_spaces, toc_title = toc_match.groups()
+            # Небольшой отступ по количеству уровней
+            indent_level = max(len(indent_spaces) // 2, 0)
+            p = doc.add_paragraph(toc_title.strip())
+            if indent_level:
+                p.paragraph_format.left_indent = Inches(0.25 * indent_level)
             continue
 
         img_match = IMG_PATTERN.fullmatch(stripped)
