@@ -16,28 +16,50 @@ IMG_PATTERN = re.compile(r"!\[(.*?)\]\(([^)]+)\)")
 # Markdown ATX heading: #, ##, ..., ###### at start of line
 HEADING_PATTERN = re.compile(r"^(#{1,6})\s+(.+)$")
 
-# TOC item inside "Оглавление" section: "- [Title](#anchor)"
-TOC_ITEM_PATTERN = re.compile(r"^(\s*)[-*]\s+\[(.+?)\]\([^)]+\)\s*$")
 
-
-def _add_word_toc(doc: Document) -> None:
+def _add_bookmark(paragraph, name: str, bookmark_id: int) -> None:
     """
-    Insert a Word auto-generated TOC field that uses Heading 1–4.
-    Пользователю нужно будет обновить поля в Word (F9 / Update field).
+    Оборачиваем заголовок в bookmark, чтобы на него можно было сослаться
+    из оглавления.
     """
-    paragraph = doc.add_paragraph()
-    # TOC over Heading levels 1–4, with hyperlinks etc.
-    instr = r'TOC \o "1-4" \h \z \u'
+    start = OxmlElement("w:bookmarkStart")
+    start.set(qn("w:id"), str(bookmark_id))
+    start.set(qn("w:name"), name)
 
-    fld_simple = OxmlElement("w:fldSimple")
-    fld_simple.set(qn("w:instr"), instr)
-    paragraph._p.append(fld_simple)
+    end = OxmlElement("w:bookmarkEnd")
+    end.set(qn("w:id"), str(bookmark_id))
+
+    p = paragraph._p
+    # bookmarkStart в начало параграфа, bookmarkEnd — в конец
+    p.insert(0, start)
+    p.append(end)
+
+
+def _add_toc_entry(doc: Document, text: str, bookmark_name: str, level: int) -> None:
+    """
+    Добавляем строку оглавления как гиперссылку на bookmark соответствующего заголовка.
+    """
+    p = doc.add_paragraph()
+    if level > 1:
+        p.paragraph_format.left_indent = Inches(0.25 * (level - 1))
+
+    hyperlink = OxmlElement("w:hyperlink")
+    hyperlink.set(qn("w:anchor"), bookmark_name)
+    hyperlink.set(qn("w:history"), "1")
 
     r = OxmlElement("w:r")
+    r_pr = OxmlElement("w:rPr")
+    r_style = OxmlElement("w:rStyle")
+    r_style.set(qn("w:val"), "Hyperlink")
+    r_pr.append(r_style)
+    r.append(r_pr)
+
     t = OxmlElement("w:t")
-    t.text = "Оглавление (обновите поля в Word)"
+    t.text = text
     r.append(t)
-    fld_simple.append(r)
+
+    hyperlink.append(r)
+    p._p.append(hyperlink)
 
 
 def md_to_docx(md_path: str, docx_path: str | None = None) -> Path:
@@ -58,10 +80,20 @@ def md_to_docx(md_path: str, docx_path: str | None = None) -> Path:
     text = md_path_obj.read_text(encoding="utf-8")
     lines = text.splitlines()
 
+    # Первый проход: собираем все заголовки, чтобы построить оглавление.
+    all_headings: list[tuple[int, str]] = []
+    for line in lines:
+        m = HEADING_PATTERN.match(line.strip())
+        if m:
+            hashes, title = m.groups()
+            level = min(len(hashes), 4)
+            all_headings.append((level, title.strip()))
+
     doc = Document()
     assets_root = md_path_obj.parent
 
     in_toc = False
+    heading_index = 0  # сквозная нумерация заголовков для bookmark'ов
 
     for line in lines:
         stripped = line.strip()
@@ -72,24 +104,31 @@ def md_to_docx(md_path: str, docx_path: str | None = None) -> Path:
             hashes, title = heading_match.groups()
             level = min(len(hashes), 4)  # map 1–4, 5/6 тоже в Heading 4
             style = f"Heading {level}"
-            doc.add_paragraph(title.strip(), style=style)
-            # Считаем, что после "Оглавление" идут специальные строки оглавления.
-            # Вместо ручного списка в DOCX вставляем авто-оглавление Word.
-            if title.strip().lower() == "оглавление":
+            heading_index += 1
+            bookmark_name = f"h{heading_index}"
+
+            title_clean = title.strip()
+            # Считаем, что после "Оглавление" в markdown идёт ручное оглавление,
+            # его пропускаем и вместо него строим своё, кликабельное.
+            if title_clean.lower() == "оглавление":
+                p = doc.add_paragraph(title_clean, style=style)
+                _add_bookmark(p, bookmark_name, heading_index)
                 in_toc = True
-                _add_word_toc(doc)
+
+                # Добавляем строки оглавления для всех остальных заголовков
+                for idx, (lvl, t) in enumerate(all_headings, start=1):
+                    if t.lower() == "оглавление":
+                        continue
+                    _add_toc_entry(doc, t, f"h{idx}", lvl)
+            else:
+                p = doc.add_paragraph(title_clean, style=style)
+                _add_bookmark(p, bookmark_name, heading_index)
             continue
 
-        # Конец секции оглавления после разделителя '---'
-        if in_toc and stripped == "---":
-            in_toc = False
-            continue
-
-        # Строки вида "- [Блок ...](#anchor)" внутри оглавления
-        toc_match = TOC_ITEM_PATTERN.match(line)
-        if in_toc and toc_match:
-            # В DOCX не дублируем ручное маркдаун-оглавление —
-            # здесь оно заменяется авто-TOC Word.
+        # Пропускаем оригинальное markdown-оглавление до разделителя '---'
+        if in_toc:
+            if stripped == "---":
+                in_toc = False
             continue
 
         img_match = IMG_PATTERN.fullmatch(stripped)
