@@ -6,6 +6,8 @@
 
 ![img_3.png](assets/img_3.png)
 
+![img.png](assets/img_7.png)
+
 Не будем сильно углубляться, затронем 5 составляющих observability:
 - метрики, 
 - логи, 
