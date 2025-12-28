@@ -9,12 +9,12 @@ root = Path(__file__).resolve().parent
 
 ORDER_DIRS = [
   Path('.'),
-  Path('00_performance'),
-  Path('01_sharding'),
-  Path('02_distributed-transactions'),
-  Path('03_cache'),
-  Path('04_trade_offs'),
-  Path('05_outro'),
+  Path('01_performance'),
+  Path('02_trade_offs'),
+  Path('03_sharding'),
+  Path('04_cache'),
+  Path('05_distributed-transactions'),
+  Path('06_outro'),
 ]
 
 def count_words(path: Path) -> int:
@@ -68,8 +68,13 @@ def report_for_files(files: list[Path], label: str) -> None:
 
   print()
   total_minutes = total_words / WPM if WPM > 0 else 0.0
-  total_hours = total_minutes / 60
-  print(f"Total: {total_words} words  ~{total_minutes:.1f} min (~{total_hours:.2f} h)")
+  rounded_minutes = int(round(total_minutes))
+  total_hours = rounded_minutes // 60
+  remaining_minutes = rounded_minutes % 60
+  print(
+      f"Total: {total_words} words  ~{rounded_minutes} min "
+      f"(~{total_hours} h {remaining_minutes:02d} min)"
+  )
   print("\n")
 
 
