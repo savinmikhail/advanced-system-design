@@ -10,11 +10,12 @@ root = Path(__file__).resolve().parent
 ORDER_DIRS = [
   Path('.'),
   Path('01_performance'),
-  Path('02_trade_offs'),
+  Path('02_sanity_check'),
   Path('03_sharding'),
   Path('04_cache'),
   Path('05_distributed-transactions'),
-  Path('06_outro'),
+  Path('06_tradeoffs'),
+  Path('07_outro'),
 ]
 
 def count_words(path: Path) -> int:

@@ -6,11 +6,12 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Топовые папки-блоки главы 3
 BLOCK_DIRS=(
   "01_performance"
-  "02_trade_offs"
+  "02_sanity_check"
   "03_sharding"
   "04_cache"
   "05_distributed-transactions"
-  "06_outro"
+  "06_tradeoffs"
+  "07_outro"
 )
 
 echo "==> 1. Собираем block_full.*.md по блокам (отдельно free и boosty)"
