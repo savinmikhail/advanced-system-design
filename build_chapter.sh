@@ -61,11 +61,13 @@ root = Path(__file__).resolve().parent
 
 order_dirs = [
     Path('.'),
-    Path('00_performance'),
-    Path('01_sharding'),
-    Path('02_distributed-transactions'),
-    Path('03_cache'),
-    Path('04_trade_offs'),
+    Path('01_performance'),
+    Path('02_sanity_check'),
+    Path('03_sharding'),
+    Path('04_cache'),
+    Path('05_distributed-transactions'),
+    Path('06_tradeoffs'),
+    Path('07_outro'),
 ]
 
 img_re = re.compile(r"!\[(.*?)\]\(([^)]+)\)")
