@@ -27,7 +27,7 @@
 
 **SWR часто комбинируют с coalescing: первый даёт стабильный latency, второй — убирает лавину запросов в БД.**
 
-### hot keys + Separate tier для hot keys
+#### hot keys + Separate tier для hot keys
 
 Примеры горячих ключей:
 
