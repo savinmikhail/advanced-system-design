@@ -146,6 +146,8 @@ head-of-line blocking - это ситуация, когда в начале оч
 
 ![img_10.png](img_10.png)
 
+![img_16.png](img_16.png)
+
 первый — Circuit Breaker
 
 Он похож на backpressure, но работает не с throughput, а со здоровьем зависимости (БД, внешний API).
