@@ -166,12 +166,16 @@ CREATE TABLE events_2026_01
 
 https://www.youtube.com/watch?v=Tq1fif3rcnQ
 
+[GitHub sharding](github_sharding.jpeg)
+
 ~~qr?~~
 
 Я сделал простенький пример хэш шардирования и директори-мэп шардирования на базе пхп и посгреса
 там есть демонстрационные команды, можете запустить поиграться, все не так страшно как может показаться
 
 https://github.com/savinmikhail/sharding-example
+
+[php sharding example](php_sharding_example.jpeg)
 
 ~~qr?~~
 
