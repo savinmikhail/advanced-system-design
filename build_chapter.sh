@@ -16,6 +16,51 @@ BLOCK_DIRS=(
 
 echo "==> 1. Собираем block_full.*.md по блокам (отдельно free и boosty)"
 
+append_markdown_with_fixed_images() {
+  local source_file="$1"
+  local target_file="$2"
+
+  python3 - "${ROOT_DIR}" "${source_file}" "${target_file}" <<'PY' >> "${target_file}"
+from pathlib import Path
+import re
+import sys
+
+root = Path(sys.argv[1]).resolve()
+path = Path(sys.argv[2]).resolve()
+target_dir = Path(sys.argv[3]).resolve().parent
+text = path.read_text(encoding="utf-8")
+img_re = re.compile(r"!\[(.*?)\]\(([^)]+)\)")
+scheme_re = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*:")
+
+
+def format_relative(p: Path) -> str:
+    rel = p.relative_to(target_dir) if p.is_relative_to(target_dir) else p
+    rel_posix = rel.as_posix()
+    if rel_posix.startswith(("../", "./")):
+        return rel_posix
+    return f"./{rel_posix}"
+
+
+def rewrite_image_path(match: re.Match[str]) -> str:
+    alt, raw_path = match.groups()
+
+    if scheme_re.match(raw_path):
+        return match.group(0)
+
+    if raw_path.startswith("/"):
+        abs_path = (root / raw_path.lstrip("/")).resolve()
+    else:
+        abs_path = (path.parent / raw_path).resolve()
+
+    new_path = format_relative(abs_path)
+
+    return f"![{alt}]({new_path})"
+
+
+print(img_re.sub(rewrite_image_path, text), end="")
+PY
+}
+
 for dir in "${BLOCK_DIRS[@]}"; do
   BLOCK_PATH="${ROOT_DIR}/${dir}"
   [ -d "${BLOCK_PATH}" ] || continue
@@ -30,7 +75,7 @@ for dir in "${BLOCK_DIRS[@]}"; do
     | while IFS= read -r -d '' f; do
         {
           echo
-          cat "${f}"
+          append_markdown_with_fixed_images "${f}" "${OUT_FILE_FREE}"
           echo
         } >> "${OUT_FILE_FREE}"
       done
@@ -45,7 +90,7 @@ for dir in "${BLOCK_DIRS[@]}"; do
     | while IFS= read -r -d '' f; do
         {
           echo
-          cat "${f}"
+          append_markdown_with_fixed_images "${f}" "${OUT_FILE_BOOSTY}"
           echo
         } >> "${OUT_FILE_BOOSTY}"
       done
@@ -53,11 +98,12 @@ done
 
 echo "==> 2. Пересобираем отдельные сценарии free/boosty (с фиксом путей картинок)"
 
-python3 << 'PY'
+python3 - "${ROOT_DIR}" << 'PY'
 from pathlib import Path
 import re
+import sys
 
-root = Path(__file__).resolve().parent
+root = Path(sys.argv[1]).resolve()
 
 order_dirs = [
     Path('.'),
@@ -72,6 +118,7 @@ order_dirs = [
 
 img_re = re.compile(r"!\[(.*?)\]\(([^)]+)\)")
 heading_re = re.compile(r"^(#{1,6})\s+(.+)$")
+scheme_re = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*:")
 
 
 def collect_files(readme_name: str, root_readme_name: str) -> list[Path]:
@@ -117,6 +164,19 @@ def write_chapter(files: list[Path], out_path: Path) -> None:
             body_chunks.append("\n\n---\n\n")
 
         text = path.read_text(encoding="utf-8")
+        def rewrite_image_path(match: re.Match[str]) -> str:
+            alt, raw_path = match.groups()
+
+            if scheme_re.match(raw_path):
+                return match.group(0)
+
+            if raw_path.startswith("/"):
+                new_path = raw_path.lstrip("/")
+            else:
+                new_path = (path.parent / raw_path).resolve().relative_to(root).as_posix()
+
+            return f"![{alt}]({new_path})"
+
         for line in text.splitlines():
             stripped = line.strip()
 
@@ -128,17 +188,7 @@ def write_chapter(files: list[Path], out_path: Path) -> None:
                 anchor = slugify(title, anchor_counters)
                 toc_entries.append((level, title.strip(), anchor))
 
-            m = img_re.fullmatch(stripped)
-            if m:
-                alt, rel_img = m.groups()
-                # Пересчитываем путь картинки относительно корня репо
-                if rel_img.startswith("/"):
-                    new_path = rel_img.lstrip("/")
-                else:
-                    new_path = (path.parent / rel_img).resolve().relative_to(root).as_posix()
-                body_chunks.append(f"![{alt}]({new_path})\n")
-            else:
-                body_chunks.append(line + "\n")
+            body_chunks.append(img_re.sub(rewrite_image_path, line) + "\n")
 
     with out_path.open("w", encoding="utf-8") as out:
         if toc_entries:
